@@ -16,6 +16,8 @@
 
 > [!NOTE]
 > 这是 MeowX（妙妙屋生态的桌面代理客户端）的**非官方**配套工具，与妙妙屋 / MeowX 官方无隶属关系。
+>
+> 界面和统计思路参考 [lufficc/clash-traffic](https://github.com/lufficc/clash-traffic)（Clash Verge 的流量统计工具），本项目把它的做法带到 MeowX 上，代码独立编写。
 
 ![概览](docs/screenshots/overview-light.png)
 

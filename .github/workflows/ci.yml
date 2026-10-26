@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build -ldflags '-H windowsgui' -o 'dist/MeowX Traffic.exe' .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meowx-traffic-windows-x64
+          path: dist/MeowX Traffic.exe

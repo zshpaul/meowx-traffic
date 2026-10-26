@@ -1,58 +1,126 @@
+<div align="center">
+
+<img src="assets/icon.png" width="96" alt="MeowX Traffic icon">
+
 # MeowX Traffic
 
-适用于 MeowX 的非官方配套工具，与 MeowX 官方无隶属关系。
+按应用统计 MeowX 流量的 Windows 托盘小工具：哪个软件在走代理、走了多少、经过哪个节点，一目了然。
 
-独立的 Windows 流量观察工具，使用 Go + MyGo + Windows WebView2。通过本机 MeowX 控制接口读取连接，不修改代理规则，不修改 MeowX，不读取 Clash Traffic 的账本。
+[![Release](https://img.shields.io/github/v/release/zshpaul/meowx-traffic)](https://github.com/zshpaul/meowx-traffic/releases/latest)
+[![CI](https://github.com/zshpaul/meowx-traffic/actions/workflows/ci.yml/badge.svg)](https://github.com/zshpaul/meowx-traffic/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/zshpaul/meowx-traffic)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D4)
+![Go](https://img.shields.io/github/go-mod/go-version/zshpaul/meowx-traffic)
 
-## 使用
+</div>
 
-下载 Windows x64 发布包并解压，右键 `Install.ps1` 使用 PowerShell 运行；也可以双击 exe 便携使用。需要 MeowX 已运行，且用户配置中的 `patchClashConfig.external-controller` 为本机地址、`find-process-mode` 为 `always`。
+> [!NOTE]
+> 这是 MeowX（妙妙屋生态的桌面代理客户端）的**非官方**配套工具，与妙妙屋 / MeowX 官方无隶属关系。
 
-默认自动从 `%APPDATA%\com.miaomiaowux\MeowX\config.json` 读取接口地址和密钥；自动模式下密钥不复制到新软件数据文件、不返回前端、不写入日志。也可在「设置」中手动填写控制接口地址和密钥（保存在本机 `settings.json`，页面不回显）。空版本号不会阻止连接：直接验证 `/connections` 的计数和连接结构。
+![概览](docs/screenshots/overview-light.png)
 
-界面布局参考 Clash Traffic：左侧导航，浅色 / 深色主题。
+<details>
+<summary>更多截图（应用详情 / 实时连接 / 设置 / 深色主题）</summary>
 
-- 概览：总流量、上下行、连接数、代理 / 直连；按小时（单日）或按天的流量趋势；应用、访问地址、节点排行和路径分布。
-- 应用 / 访问地址 / 节点：排行表格，点击一行在右侧查看趋势和关联的地址、应用、节点；搜索、CSV 导出。
-- 实时连接：上下行速度、最近 5 分钟曲线、活动连接的速度、节点链、规则和时长；可按应用分组。
-- 时间范围：今天 / 昨天 / 近 7 天 / 近 30 天 / 本月 / 自定义（含起止两日）；可只看代理或直连。
-- 设置：连接方式与测试连接、开机自启、静默启动、主题、保留天数、打开数据目录、清空历史。
-- 数据在 `%LOCALAPPDATA%\MeowX Traffic\history.json`；每 5 秒保存，正常退出再保存。按小时记录；0.3.0 之前的旧数据只有日期，不显示在小时趋势中。
-- 关闭窗口继续在托盘采集；右键托盘可打开窗口、开关自启和静默启动、退出并保存。
-- 默认静默启动。再次运行 exe 或使用开始菜单入口可打开窗口。安装脚本为当前用户启用登录自启，无需管理员。
-- 不包含自动更新；升级前从托盘退出，然后重新运行新版安装脚本。历史独立保存，不随安装覆盖。
+![应用](docs/screenshots/apps-light.png)
+![实时连接](docs/screenshots/live-light.png)
+![设置](docs/screenshots/settings-light.png)
+![深色主题](docs/screenshots/overview-dark.png)
 
-## 统计边界
+截图使用演示数据生成。
 
-仅统计 MeowX 控制器可见的流量；没有经过它的系统流量不在覆盖范围。初次连接及每次启动先建立基线，不追记此前数据。正常采样每秒一次；中断超过 10 秒或累计计数回退重新建立基线。短连接可能漏采；无法归属的内核增量不猜测分配到具体应用。内核差额可能因非原子快照短暂为负。
+</details>
 
-明细默认保留最近 30 天（设置中可改为 1–3650 天）；采集起点及核心累计增量保留。应用按原始进程名归类，不把 WebView2、Node 等辅助进程强行认定为某个软件。跨整点的一个采样增量归入采样结束时所在的小时。
+## 为什么需要它
 
-这不是 Clash Traffic 的完整复制品：不包含订阅剩余额度、跨设备同步、已结束连接的逐条访问日志、辅助进程智能合并。界面只参考其布局与视觉，独立编写，没有复制其实现（Clash Traffic 仓库未附许可证）。
+MeowX 的连接列表只反映当前时刻。想知道“这周走代理的流量是谁用掉的”“Obsidian 同步到底是直连还是代理”，需要一个长期记账的工具。MeowX Traffic 通过 MeowX 本机控制接口每秒采样一次连接，按应用、访问地址、节点和小时累计，保存在本机。
 
-## 构建和测试
+- 不修改 MeowX、不修改代理规则，只读控制接口。
+- 数据只存在本机，不上传任何地方。
+- 单个 exe，关窗后在托盘继续采集，默认开机静默启动。
 
-```powershell
-.tools\go\bin\go.exe test ./...
-$env:MEOWX_LIVE_TEST='1'
-.tools\go\bin\go.exe test -v ./...
-.tools\go\bin\go.exe build -ldflags '-H windowsgui' -o 'dist\MeowX Traffic.exe' .
+## 功能
+
+| 页面 | 内容 |
+| --- | --- |
+| 概览 | 总流量、上下行、连接数、代理 / 直连占比；按小时或按天的趋势；应用、地址、节点排行 |
+| 应用 / 访问地址 / 节点 | 排行表格，点选一行查看其趋势及关联的地址、应用、节点；搜索、导出 CSV |
+| 实时连接 | 上下行速度、最近 5 分钟曲线、活动连接的节点链、命中规则和时长；可按应用分组 |
+| 设置 | 连接方式与测试连接、开机自启、静默启动、主题、保留天数、数据目录、清空历史 |
+
+统计页支持今天 / 昨天 / 近 7 天 / 近 30 天 / 本月 / 自定义日期，以及全部 / 仅代理 / 仅直连过滤。
+
+## 快速开始
+
+**1. 准备 MeowX**
+
+MeowX 需要开启本机控制接口，并让内核识别每个连接所属的进程。对应 `%APPDATA%\com.miaomiaowux\MeowX\config.json` 中 `patchClashConfig` 的这几项：
+
+```json
+"external-controller": "127.0.0.1:9090",
+"secret": "换成你自己的随机字符串",
+"find-process-mode": "always"
 ```
 
-Go 1.27.3，MyGo v0.4.8。Go 工具链是项目本地下载且经官方 SHA256 校验，不修改全局 PATH。
+`external-controller` 是控制接口，不是 7890 代理端口；`find-process-mode: always` 是按应用统计的前提。修改后重启 MeowX。
 
-## 工作原理与研究
+**2. 安装**
 
-见 `docs/architecture.md`。REA 分析了 Clash Traffic 前端；后端机制通过固定版本源码审查验证。新程序独立实现，没有复制 Clash Traffic 的实现。
+1. 从 [Releases](https://github.com/zshpaul/meowx-traffic/releases/latest) 下载 `MeowX-Traffic-<版本>-windows-x64.zip` 并解压。
+2. 右键 `Install.ps1` → 使用 PowerShell 运行。程序复制到 `%LOCALAPPDATA%\Programs\MeowX Traffic`，创建开始菜单入口，并为当前用户开启登录自启（无需管理员）。
+3. 从开始菜单或托盘图标打开窗口。也可以不安装，直接双击 exe 便携使用。
 
-不能恢复 首次运行之前的按应用流量，也不能看到 HTTPS 下载内容的具体文件路径。
+程序默认自动读取上述 MeowX 配置获取接口地址和密钥；密钥不会复制到本工具的数据文件、不返回前端、不写日志。配置不在默认位置时，在「设置 → MeowX 连接」改为手动填写。MeowX 未运行时会持续重试，两者启动先后不限。
 
-## 另一台电脑
+需要 Windows 10/11 x64 和 Microsoft Edge WebView2 Runtime（Windows 11 自带）。
 
-支持 Windows x64，需要 Microsoft Edge WebView2 Runtime 和 MeowX。下载同一个发布包，按上方步骤安装。不要复制其他电脑的 MeowX 配置、密钥或流量历史。
+## 在另一台电脑使用
 
-在该电脑的 MeowX 持久设置中启用本机控制接口，例如 `127.0.0.1:9090`，设置自己的非空 secret，并启用 `find-process-mode: always`，然后重启 MeowX。不要把代理端口 7890 当控制接口端口。程序读取该电脑 `%APPDATA%\com.miaomiaowux\MeowX\config.json` 的 `patchClashConfig`；配置在其他位置时，在「设置 → MeowX 连接」改为手动填写。若 MeowX 未就绪会持续重试。
+每台电脑独立安装、独立统计：下载同一个发布包按上述步骤安装，并在该电脑的 MeowX 中设置**它自己的** secret。不要复制其他电脑的 MeowX 配置、密钥或流量历史；各电脑数据不会自动合并。
 
-此应用不会替你修改 MeowX 配置。应用启动晚于 MeowX 或早于 MeowX 均可；断线期间不保证补计。各电脑分别统计，不会自动合并。
+## 升级与卸载
 
-卸载：托盘关闭开机自启，退出程序，删除 `%LOCALAPPDATA%\Programs\MeowX Traffic` 及开始菜单快捷方式即可。历史数据默认保留。
+- 升级：托盘右键 → 退出，再运行新版的 `Install.ps1`。历史数据独立保存，不会被覆盖。
+- 卸载：托盘关闭开机自启 → 退出，删除 `%LOCALAPPDATA%\Programs\MeowX Traffic` 和开始菜单快捷方式。历史在 `%LOCALAPPDATA%\MeowX Traffic`，需要时手动删除。
+
+## 数据与统计边界
+
+- 数据：`%LOCALAPPDATA%\MeowX Traffic\history.json`（每 5 秒保存，退出时再保存）和 `settings.json`。明细默认保留 30 天，可设 1–3650 天。
+- 只统计经过 MeowX 内核的流量；未经过它的系统流量看不到。
+- 每次启动或中断超过 10 秒后重新建立基线，不追记中断期间的数据；极短的连接可能漏采。
+- 无法归属到连接的内核增量不会被猜测分配给某个应用。
+- 应用按原始进程名归类，不合并 WebView2、Node 等辅助进程。
+- 看不到 HTTPS 内容的具体文件路径，也无法恢复首次运行之前的流量。
+
+## 工作原理
+
+与 [Clash Traffic](https://github.com/lufficc/clash-traffic) 思路相同：轮询 mihomo 内核的 `/connections`，对每条连接的累计上传 / 下载做差分，按进程、目标地址、节点链和小时累加。分析过程和证据见 [docs/architecture.md](docs/architecture.md)。
+
+## 构建
+
+```powershell
+go test ./...
+go build -ldflags '-H windowsgui' -o 'dist\MeowX Traffic.exe' .
+# 连接本机真实 MeowX 的集成测试
+$env:MEOWX_LIVE_TEST = '1'; go test -v ./...
+```
+
+需要 Go 1.27+。exe 图标资源可用 [go-winres](https://github.com/tc-hib/go-winres) 由 `assets/icon.ico` 生成（`*.syso` 不入库，缺少时仍可编译，只是没有 exe 图标）。界面使用 [MyGo](https://github.com/egoist/mygo) + WebView2。
+
+## 相关项目与致谢
+
+- [iluobei/miaomiaowu](https://github.com/iluobei/miaomiaowu)：妙妙屋，Clash 订阅管理。
+- [iluobei/miaomiaowuX](https://github.com/iluobei/miaomiaowuX)：妙妙屋 X，Xray 服务端管理；交流群 [t.me/miaomiaowux](https://t.me/miaomiaowux)。
+- [lufficc/clash-traffic](https://github.com/lufficc/clash-traffic)：界面布局和统计思路的灵感来源。本项目独立编写，未复制其代码（该仓库未附许可证）。
+- [egoist/mygo](https://github.com/egoist/mygo)：Go 桌面窗口与托盘。
+- [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)：MeowX 使用的代理内核及其控制接口。
+
+本项目只通过公开的 mihomo 控制接口与 MeowX 交互，不包含妙妙屋 / MeowX 的任何代码。
+
+## 许可证
+
+[MIT](LICENSE)。发布包附带依赖的许可证文本。
+
+---
+
+**English:** MeowX Traffic is an unofficial Windows tray companion for the MeowX proxy client. It polls the local mihomo controller (`/connections`), records per-app / per-host / per-node traffic by hour, and shows it in a Clash Traffic-style dashboard with direct/proxy filtering, custom date ranges and silent autostart. Data stays on your machine. Download from [Releases](https://github.com/zshpaul/meowx-traffic/releases/latest).

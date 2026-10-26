@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MeowX Traffic</title>
+<style>
+:root{--ink:#183334;--muted:#687c7b;--paper:#f4f5ef;--line:#d9e1da;--green:#26765e;--orange:#bc592e}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 90% 0,#e0e9d9,transparent 55%),var(--paper);color:var(--ink);font:14px "Microsoft YaHei UI",sans-serif}main{max-width:1440px;margin:auto;padding:30px 36px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px}.eyebrow{font:12px Consolas,monospace;letter-spacing:3px;color:var(--green)}h1{font:36px Georgia,serif;margin:8px 0}h2{font-size:17px;margin:0}small,.muted{color:var(--muted)}.badge{border:1px solid var(--line);padding:9px 13px;border-radius:20px;background:#ffffff88}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.card{background:#ffffffb8;border:1px solid var(--line);border-radius:15px;padding:20px}.card strong{display:block;font:30px Consolas,monospace;margin:12px 0 6px}.chart{margin:18px 0;background:#183334;color:#fff;border-radius:16px;padding:20px}.charthead{display:flex;justify-content:space-between}.chart svg{width:100%;height:100px;margin-top:10px}.tools{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 16px}button,select,input{font:inherit;color:var(--ink);background:white;border:1px solid var(--line);padding:10px 14px;border-radius:8px}button{cursor:pointer}button.active{background:var(--ink);color:white}input{min-width:200px;flex:1}.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:#ffffffab}table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--line)}th{font-weight:normal;color:var(--muted);font-size:12px}td.num,th.num{text-align:right;font-family:Consolas,monospace}td.name{max-width:360px;overflow:hidden;text-overflow:ellipsis}tbody tr:hover{background:#edf3e8}.bar{height:4px;background:#dce9df;width:100px;margin-top:6px;border-radius:4px}.bar i{display:block;height:100%;background:var(--green)}.pill{font-size:12px;padding:3px 8px;background:#dfeee3;border-radius:5px}.warn{color:var(--orange)}footer{font-size:12px;line-height:1.8;margin-top:18px;color:var(--muted)}.empty{padding:40px;text-align:center;color:var(--muted)}@media(max-width:850px){main{padding:20px}.cards{grid-template-columns:repeat(2,1fr)}header{align-items:flex-start;gap:10px}h1{font-size:28px}.badge{max-width:220px}td,th{padding:10px}}@media(prefers-reduced-motion:no-preference){main{animation:appear .35s ease-out}@keyframes appear{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}}
+</style>
+<main>
+<header><div><div class="eyebrow">LOCAL NETWORK OBSERVATORY</div><h1>MeowX Traffic<span style="color:#77a587">.</span></h1><small>看清每个应用的流量去向</small></div><div class="badge" id="status">正在连接…</div></header>
+<section class="cards">
+<div class="card"><small>已归属流量 · 当前筛选</small><strong id="total">—</strong><small id="split">等待采集</small></div>
+<div class="card"><small>代理流量 · 当前时间段</small><strong id="proxy">—</strong><small>按连接实际出口分类</small></div>
+<div class="card"><small>直连流量 · 当前时间段</small><strong id="direct">—</strong><small>同样记录，但不计入代理</small></div>
+<div class="card"><small>当前活跃连接 · 全部</small><strong id="active">—</strong><small id="last">等待首个快照</small></div>
+</section>
+<section class="chart"><div class="charthead"><h2>实时速率</h2><span id="rate">↓ —　↑ —</span></div><svg viewBox="0 0 1000 100" preserveAspectRatio="none"><path d="M0 95H1000 M0 50H1000 M0 5H1000" stroke="#ffffff16"/><polyline id="downline" fill="none" stroke="#a9d697" stroke-width="2"/><polyline id="upline" fill="none" stroke="#efbd8e" stroke-width="2"/></svg><small style="color:#adc0b8">最近 120 秒 · 绿色下载 / 橙色上传 · 内核全部流量，不受下方筛选影响</small></section>
+<div class="tools"><button class="active" data-view="App">应用</button><button data-view="Host">目标地址</button><button data-view="Node">节点</button><button data-view="Live">实时连接</button><select id="period"><option value="today">今天</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自定义日期</option></select><label id="dates" hidden>从 <input id="from" type="date" style="min-width:0"> 至 <input id="to" type="date" style="min-width:0"></label><select id="route"><option value="">全部路径</option><option>代理</option><option>直连</option><option>未知</option><option>拒绝</option></select><input id="search" placeholder="筛选应用、域名、节点"><button id="export">导出 CSV</button></div>
+<div id="breadcrumb" class="muted" style="margin-bottom:10px"></div><div class="tablewrap"><table><thead id="thead"></thead><tbody id="tbody"></tbody></table></div>
+<footer id="foot"></footer>
+</main>
+<script>
+let data=null,view='App',appFilter='',exportRows=[];
+const $=id=>document.getElementById(id),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function bytes(n){if(!Number.isFinite(n))return '—';const a=Math.abs(n);let p=a>=1073741824?3:a>=1048576?2:a>=1024?1:0;return (n/1024**p).toFixed(p?2:0)+' '+['B','KiB','MiB','GiB'][p]}
+function day(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function render(){
+ if(!data)return;
+ const h=data.history,now=new Date(),cut=new Date(now);cut.setDate(now.getDate()-($('period').value==='today'?0:Number($('period').value)-1));
+ const custom=$('period').value==='custom';$('dates').hidden=!custom;
+ if(custom&&(!$('from').value||!$('to').value||$('from').value>$('to').value)){$('breadcrumb').textContent='请选择有效日期：开始日期不能晚于结束日期。';$('tbody').innerHTML='';exportRows=[];return}
+ const lower=custom?$('from').value:day(cut),upper=custom?$('to').value:day(now);
+ const all=Object.values(h.Rows||{}).filter(r=>r.Day>=lower&&r.Day<=upper);
+ const selected=all.filter(r=>(!$('route').value||r.Route===$('route').value)&&(!appFilter||r.App===appFilter)&&[r.App,r.Host,r.Node].join(' ').toLowerCase().includes($('search').value.toLowerCase()));
+ const sum=(a,k)=>a.reduce((t,r)=>t+r[k],0),up=sum(selected,'Up'),dn=sum(selected,'Down');
+ $('total').textContent=bytes(up+dn);$('split').textContent='↓ '+bytes(dn)+'　↑ '+bytes(up);
+ $('proxy').textContent=bytes(all.filter(r=>r.Route==='代理').reduce((t,r)=>t+r.Up+r.Down,0));$('direct').textContent=bytes(all.filter(r=>r.Route==='直连').reduce((t,r)=>t+r.Up+r.Down,0));
+ $('status').textContent=data.status;$('status').classList.toggle('warn',!data.status.startsWith('已连接'));
+ $('active').textContent=(data.live||[]).length;$('last').textContent='最后采样 '+new Date(data.last).toLocaleTimeString();
+ $('rate').textContent='↓ '+bytes(data.downRate)+'/s　↑ '+bytes(data.upRate)+'/s';
+ let trend=data.trend||[],max=Math.max(1,...trend.flatMap(p=>[p[1],p[2]]));
+ for(let [id,index] of [['downline',2],['upline',1]])$(id).setAttribute('points',trend.map((p,i)=>`${i*1000/Math.max(1,trend.length-1)},${95-p[index]/max*90}`).join(' '));
+ $('breadcrumb').textContent=appFilter?'应用：'+appFilter+' · 点击上方「应用」返回全部':'历史统计只计采集期间观察到的增量；应用行可点击查看目标地址。';
+ let rows;
+ if(view==='Live'){
+ rows=(data.live||[]).map(c=>({Name:c.metadata.process||'未识别进程',Host:c.metadata.host||c.metadata.destinationIP,Route:!c.chains?.length?'未知':c.chains[0]==='DIRECT'?'直连':c.chains[0].startsWith('REJECT')?'拒绝':'代理',Node:c.chains?.[0]||'',Up:c.upload,Down:c.download,Rule:c.rule+' '+c.rulePayload,Start:c.start}));
+ rows=rows.filter(r=>(!$('route').value||r.Route===$('route').value)&&[r.Name,r.Host,r.Node].join(' ').toLowerCase().includes($('search').value.toLowerCase())).sort((a,b)=>b.Down+b.Up-a.Down-a.Up);
+ $('thead').innerHTML='<tr><th>应用 / 目标</th><th>路径 / 节点</th><th class="num">连接累计下载</th><th class="num">连接累计上传</th><th>规则</th></tr>';
+ $('tbody').innerHTML=rows.map(r=>`<tr><td class="name">${esc(r.Name)}<br><small>${esc(r.Host)}</small></td><td><span class="pill">${esc(r.Route)}</span> ${esc(r.Node)}</td><td class="num">${bytes(r.Down)}</td><td class="num">${bytes(r.Up)}</td><td>${esc(r.Rule)}</td></tr>`).join('');
+ }else{
+ let groups=new Map();for(const r of selected){const key=r[view]||'未知';if(!groups.has(key))groups.set(key,{Name:key,Up:0,Down:0});let g=groups.get(key);g.Up+=r.Up;g.Down+=r.Down}
+ rows=[...groups.values()].sort((a,b)=>b.Down+b.Up-a.Down-a.Up);
+ $('thead').innerHTML='<tr><th>'+({App:'应用 · 点击展开',Host:'目标地址',Node:'出口节点'}[view])+'</th><th class="num">下载</th><th class="num">上传</th><th class="num">合计</th><th>占比</th></tr>';
+ $('tbody').innerHTML=rows.map((r,i)=>`<tr ${view==='App'?'data-index="'+i+'" style="cursor:pointer"':''}><td class="name">${esc(r.Name)}</td><td class="num">${bytes(r.Down)}</td><td class="num">${bytes(r.Up)}</td><td class="num">${bytes(r.Up+r.Down)}</td><td>${((r.Up+r.Down)/Math.max(1,up+dn)*100).toFixed(1)}%<div class="bar"><i style="width:${(r.Up+r.Down)/Math.max(1,up+dn)*100}%"></i></div></td></tr>`).join('');
+ if(view==='App')$('tbody').querySelectorAll('[data-index]').forEach(el=>el.onclick=()=>{appFilter=rows[Number(el.dataset.index)].Name;view='Host';tabs();render()});
+ }
+ exportRows=rows;if(!rows.length)$('tbody').innerHTML='<tr><td colspan="5" class="empty">暂无符合条件的数据。连接成功后，使用浏览器产生一些流量即可。</td></tr>';
+ const attributed=Object.values(h.Rows||{}).reduce((t,r)=>t+r.Up+r.Down,0),difference=h.CoreUp+h.CoreDown-attributed;
+ $('foot').textContent='首次采集：'+new Date(h.Since).toLocaleString()+'。保留最近 30 天按日记录，历史每 5 秒保存，关闭窗口继续在托盘采集，托盘「退出并保存」停止。重启后先建立基线，不追计停机期间流量。采集中断 / 内核重置：'+h.Gaps+' 次。全时段内核增量 '+bytes(h.CoreUp+h.CoreDown)+'；与保留明细之差 '+bytes(difference)+'（含未捕获短连接、采样偏差及过期明细，不强行分摊到软件）。实时连接显示连接自身累计值，可能早于首次采集。';
+}
+function tabs(){document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===view))}
+document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{view=b.dataset.view;appFilter='';tabs();render()});
+for(const id of ['period','route','search','from','to'])$(id).oninput=render;
+$('export').onclick=()=>{if(!exportRows.length)return;let keys=Object.keys(exportRows[0]),q=v=>'"'+String(v??'').replace(/^[=+@-]/,"'$&").replaceAll('"','""')+'"';let csv='\ufeff'+[keys,...exportRows.map(r=>keys.map(k=>r[k]))].map(r=>r.map(q).join(',')).join('\r\n');let u=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));let a=document.createElement('a');a.href=u;a.download='meowx-traffic-'+day(new Date())+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};
+$('from').value=day(new Date());$('to').value=day(new Date());
+async function tick(){try{const r=await fetch('api');if(!r.ok)throw Error();data=await r.json();render()}catch{$('status').textContent='采集程序连接中断'}finally{setTimeout(tick,1000)}}tick();
+</script></html>

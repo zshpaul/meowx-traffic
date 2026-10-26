@@ -1,0 +1,13 @@
+.tools/
+research/rea/
+research/clash-traffic/
+research/rea-evidence.json
+build/
+*.tmp
+dist/
+*.syso
+research/runtime-validation.json
+research/validation.txt
+research/build-sha256.json
+
+research/

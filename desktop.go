@@ -1,15 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"slices"
 
 	"github.com/egoist/mygo"
 )
 
-func desktop(url, dir string) {
+func desktop(url string, st *Store) {
 	app := mygo.App
 	var win *mygo.Window
 	show := func() {
@@ -25,11 +23,6 @@ func desktop(url, dir string) {
 	app.OnSecondInstance(func([]string, string) { show() })
 	app.OnWindowAllClosed(func() {})
 	app.WhenReady(func() {
-		prefFile := filepath.Join(dir, "desktop.json")
-		pref := struct{ Silent bool }{true}
-		if b, err := os.ReadFile(prefFile); err == nil {
-			_ = json.Unmarshal(b, &pref)
-		}
 		if slices.Contains(os.Args, "--enable-autostart") {
 			if err := app.SetOpenAtLogin(true); err != nil {
 				mygo.Dialog.Error("开机自启设置失败", err.Error())
@@ -46,15 +39,9 @@ func desktop(url, dir string) {
 				refresh()
 			}},
 			{ID: "silent", Label: "静默启动", Click: func(*mygo.MenuItem, *mygo.Window) {
-				next := pref
-				next.Silent = !pref.Silent
-				b, _ := json.Marshal(next)
-				if err := os.WriteFile(prefFile, b, 0600); err != nil {
+				if _, err := st.Update(func(s *Settings) { s.Silent = !s.Silent }); err != nil {
 					mygo.Dialog.Error("设置失败", err.Error())
-					return
 				}
-				pref = next
-				refresh()
 			}},
 			mygo.Separator(),
 			{Label: "退出并保存", Click: func(*mygo.MenuItem, *mygo.Window) { app.Quit() }},
@@ -67,9 +54,10 @@ func desktop(url, dir string) {
 				return s + "：已关闭"
 			}
 			menu.ItemByID("autostart").SetLabel(label("开机自启", app.OpenAtLogin()))
-			menu.ItemByID("silent").SetLabel(label("静默启动", pref.Silent))
+			menu.ItemByID("silent").SetLabel(label("静默启动", st.Get().Silent))
 		}
 		refresh()
+		st.OnChange(func(Settings) { refresh() })
 		icon, _ := assets.ReadFile("assets/icon.png")
 		tray, err := mygo.NewTray(mygo.TrayOptions{Icon: icon, ToolTip: "MeowX Traffic · 后台采集", Menu: menu})
 		if err != nil {
@@ -78,7 +66,7 @@ func desktop(url, dir string) {
 			return
 		}
 		tray.OnClick(show)
-		if slices.Contains(os.Args, "--show") || (!pref.Silent && !slices.Contains(os.Args, "--silent")) {
+		if slices.Contains(os.Args, "--show") || (!st.Get().Silent && !slices.Contains(os.Args, "--silent")) {
 			show()
 		}
 	})

@@ -38,7 +38,7 @@
 MeowX 的连接列表只反映当前时刻。想知道“这周走代理的流量是谁用掉的”“Obsidian 同步到底是直连还是代理”，需要一个长期记账的工具。MeowX Traffic 通过 MeowX 本机控制接口每秒采样一次连接，按应用、访问地址、节点和小时累计，保存在本机。
 
 - 不修改 MeowX、不修改代理规则，只读控制接口。
-- 数据只存在本机，不上传任何地方。
+- 默认数据只保存在本机；公开探针上传须在设置中明确启用。
 - 单个 exe，关窗后在托盘继续采集，默认开机静默启动。
 
 ## 功能
@@ -88,6 +88,11 @@ MeowX 需要开启本机控制接口，并让内核识别每个连接所属的�
 ## 数据与统计边界
 
 - 数据：`%LOCALAPPDATA%\MeowX Traffic\history.json`（每 5 秒保存，退出时再保存）和 `settings.json`。明细默认保留 30 天，可设 1–3650 天。
+- 自动测速组页面只读取 mihomo 已有的 URLTest 选中节点、测试地址与该节点最近的测速结果，不主动测速；记录表示读取时的选中关系，不能证明测速发生时仍选中该节点。失败值 0 显示为失败，缺失不记为 0。节点切换、断连与失败处断开曲线；程序未运行时或内核历史已覆盖的记录不能完整补齐。测速记录与流量历史共享保留天数，保存在本机。
+- 可选的公开探针上传默认关闭：选择自动测速组并明确确认当前节点，填写 HTTPS 探针地址、公开组名、中性节点名前缀和独立写入密钥并启用。只有启用后实际读取到的新鲜测速结果会发送；历史点不会补传。仅上传与已确认的组、节点完整名称及测试地址精确匹配的结果；切换到其他节点暂停上传，切回后重新分段。节点名前缀附加本机生成的不透明标识；显示的是读取时的选择，不保证测速时的选择。控制器、测试地址、真实节点名和设备信息不上传，密钥通过 Windows DPAPI 保存，不返回页面。暂存队列最多 1000 条，确认后移除；满时等待处理，超过 30 天的数据不发送。服务端或网络故障会显示状态，401/409 等错误须修正设置后重试。勿将写入密钥或本机数据目录交给他人。
+- 启用上传并绑定本地订阅档案后，可同步缓存中的配额快照；档案通过受保护的本机配额设置接口按精确 ID 绑定，界面目前只显示同步状态。缓存时间不是实时账户时间，程序不会主动刷新订阅或发送订阅地址。
+- 节点速率按连接链完整名称匹配已确认节点，每秒从活动连接计数差估算，每五秒发送当前快照；短连接和已结束连接的尾部可能遗漏。切换组的当前节点不会改变已有连接的归属。断连或无法建立可靠基线时显示未知，旧速率不会离线补传。
+- 本地探针守护是可选组件，需要单独提供兼容的探针运行包及 `probe-guard.exe`。注册脚本 `tools/Register-ProbeGuard.ps1` 创建当前 Windows 用户登录后的计划任务；手动停止后需手动恢复，用户未登录时不运行。
 - 只统计经过 MeowX 内核的流量；未经过它的系统流量看不到。
 - 每次启动或中断超过 10 秒后重新建立基线，不追记中断期间的数据；极短的连接可能漏采。
 - 无法归属到连接的内核增量不会被猜测分配给某个应用。
@@ -125,4 +130,4 @@ $env:MEOWX_LIVE_TEST = '1'; go test -v ./...
 
 ---
 
-**English:** MeowX Traffic is an unofficial Windows tray companion for the MeowX proxy client. It polls the local mihomo controller (`/connections`), records per-app / per-host / per-node traffic by hour, and shows it in a Clash Traffic-style dashboard with direct/proxy filtering, custom date ranges and silent autostart. Data stays on your machine. Download from [Releases](https://github.com/zshpaul/meowx-traffic/releases/latest).
+**English:** MeowX Traffic is an unofficial Windows tray companion for the MeowX proxy client. It polls the local mihomo controller (`/connections`), records per-app / per-host / per-node traffic by hour, and shows it in a Clash Traffic-style dashboard with direct/proxy filtering, custom date ranges and silent autostart. Data stays on your machine unless you explicitly enable optional probe uploads. Download from [Releases](https://github.com/zshpaul/meowx-traffic/releases/latest).

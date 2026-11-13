@@ -151,6 +151,7 @@ const NAV=[
  {id:'apps',label:'应用',icon:'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z'},
  {id:'hosts',label:'访问地址',icon:'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18'},
  {id:'nodes',label:'节点',icon:'M6 4a2 2 0 1 0 0 4a2 2 0 1 0 0-4M18 16a2 2 0 1 0 0 4a2 2 0 1 0 0-4M6 8v3a4 4 0 0 0 4 4h6'},
+ {id:'latency',label:'测速记录',icon:'M3 17l5-6 4 3 8-10M16 4h4v4'},
  {id:'live',label:'实时连接',icon:'M3 12h4l3-7 4 14 3-7h4'},
  {id:'settings',label:'设置',icon:'M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1'},
 ];
@@ -160,7 +161,7 @@ const KINDS={
  nodes:{key:'Node',title:'节点',search:'搜索节点',related:[['App','使用它的应用','apps'],['Host','访问的地址','hosts']]},
 };
 const PRESETS=[['today','今天'],['yesterday','昨天'],['7d','近 7 天'],['30d','近 30 天'],['month','本月'],['custom','自定义']];
-const S={page:location.hash.slice(1)||load('page','overview'),preset:load('preset','today'),route:load('route',''),from:'',to:'',search:'',sel:{},live:null,hist:null,conf:null,prevLive:new Map(),exportRows:[],liveGroup:false,liveSort:'speed'};
+const S={page:location.hash.slice(1)||load('page','overview'),preset:load('preset','today'),route:load('route',''),from:'',to:'',search:'',sel:{},live:null,hist:null,conf:null,prevLive:new Map(),exportRows:[],liveGroup:false,liveSort:'speed',latency:null,latencyKey:'',upload:null};
 if(!NAV.some(n=>n.id===S.page))S.page='overview';
 if(!PRESETS.some(p=>p[0]===S.preset))S.preset='today';
 if(!['','proxy','direct'].includes(S.route))S.route='';
@@ -266,9 +267,11 @@ function ranking(kind){
 function live(){
  const L=S.live;if(!L)return '<div class="card empty">正在连接…</div>';
  const q=S.search.trim().toLowerCase(),now=Date.now();
+ const nr=L.nodeRate, nrTime=Date.parse(nr?.observed_at||''), nrOK=L.connected&&nr?.status==='ok'&&Number.isFinite(nrTime)&&now-nrTime>=-5000&&now-nrTime<10000;
  let cs=(L.live||[]).filter(c=>routeOk(routeOf(c)));
  if(q)cs=cs.filter(c=>[c.metadata.process,c.metadata.processPath,c.metadata.host,c.metadata.destinationIP,(c.chains||[]).join(' '),c.rule,c.rulePayload].join(' ').toLowerCase().includes(q));
  let h=`<div class="cards four">${stat('<i class="ln down"></i>下载速度',rate(L.downRate))}${stat('<i class="ln up"></i>上传速度',rate(L.upRate))}${stat('活动连接',int((L.live||[]).length))}<div class="card stat"><div class="label">内核启动以来</div><div class="pair">下载 ${bytes(L.downloadTotal)}<br>上传 ${bytes(L.uploadTotal)}</div></div></div>`;
+ h+=card('所选上报节点速率','<span class="muted">根据实际连接路径估算</span>',`<div class="kv"><div><small>下载</small><b>${nrOK?rate(nr.download_bps):'未知'}</b></div><div><small>上传</small><b>${nrOK?rate(nr.upload_bps):'未知'}</b></div></div><div class="note">最近约 1 秒，仅统计经过所选节点的活动连接；短连接及结束时的尾部流量可能遗漏。</div>`);
  h+=card('最近 5 分钟','<div class="legend"><span><i class="ln down"></i>下载</span><span><i class="ln up"></i>上传</span></div>',`<div class="chart">${lineChart(L.trend||[],innerWidth_(),220)}</div>`);
  let body;
  if(!L.connected)body=`<div class="empty">${esc(L.status)}</div>`;
@@ -295,6 +298,7 @@ ${card('MeowX 连接','',`<div class="statusbox"><span class="dot" id="cs-dot"><
  <div id="manual-box"><div class="srow"><label class="k" for="addr">控制接口地址</label><input id="addr" value="${esc(s.address)}" placeholder="http://127.0.0.1:9090" autocomplete="off" spellcheck="false"><div class="help">MeowX 的 external-controller，不是 7890 等代理端口</div></div>
  <div class="srow"><label class="k" for="secret">密钥 (secret)</label><input id="secret" type="password" autocomplete="off" placeholder="${c.hasSecret?'已保存，留空表示不修改':'未设置'}"><div class="help">${c.hasSecret?'<label class="check"><input type="checkbox" id="clear-secret">清除已保存的密钥</label>':'MeowX 设置中的 secret；保存在本机数据目录的 settings.json'}</div></div></div>
  <div class="srow"><span></span><div class="inline"><button type="button" class="btn" id="test">测试连接</button><button type="button" class="btn primary" id="save-conn">保存</button><span class="result" id="test-result"></span></div></div>`)}
+${uploadSettingsCard()}
 ${card('启动','',tog('autostart','开机自启','登录 Windows 后自动在后台采集',c.autostart)+tog('silent','静默启动','启动时只显示托盘图标，不打开窗口；双击托盘或再次运行可打开',s.silent))}
 ${card('外观','',`<div class="srow"><span class="k">主题</span><div>${seg('theme',s.theme,[['system','跟随系统'],['light','浅色'],['dark','深色']])}</div></div>`)}
 ${card('数据','',`<div class="facts" id="facts" style="margin-bottom:8px">${facts()}</div>
@@ -305,6 +309,23 @@ ${card('关于','',`<div class="srow"><span class="k">版本</span><div>MeowX Tr
  <div class="srow"><span class="k">源码</span><div class="mono">github.com/zshpaul/meowx-traffic</div></div>
  <p class="note">统计方式：每秒读取 MeowX 控制接口 /connections，按连接增量归属到应用、地址和节点。启动后先建立基线，不追记停机期间的流量；中断超过 10 秒或内核重启会重新建立基线。短连接可能漏采，无法归属的内核增量不会强行分摊到软件。关闭窗口后继续在托盘采集，托盘「退出并保存」才会停止。</p>`)}
 </div>`}
+function uploadSettingsCard(){
+ const u=S.upload;if(!u)return card('公开探针上传','', '<div class="note">正在读取上传设置…</div>');
+ const s=u.settings||{},groups=u.groups||[],selected=JSON.stringify([s.source||'',s.group||'',s.targetNode||'',s.targetUrl||'']);
+ const options=groups.map(g=>{const v=JSON.stringify([g.endpoint,g.group,g.node,g.testUrl]);return `<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(g.group)} · 当前节点：${esc(g.node||"未知")}</option>`}).join('');
+ return card('公开探针上传','',`<p class="note">默认关闭。启用后，仅上传所选组当前选中的指定节点的新测速结果，切换其他节点后暂停；公开页面的所有访客可见以下别名和时间。不会上传控制器地址、真实节点名或测速地址。</p>
+ <div class="srow"><label class="k" for="upload-enabled">启用上传</label><label class="check"><input type="checkbox" id="upload-enabled" ${s.enabled?'checked':''}>允许发送到公开探针</label></div>
+ <div class="srow"><label class="k" for="upload-endpoint">探针站点地址</label><input id="upload-endpoint" value="${esc(s.endpoint)}" placeholder="https://example.com" autocomplete="off"><div class="help">使用 HTTPS；仅本机测试允许 HTTP。</div></div>
+ <div class="srow"><label class="k" for="upload-group">自动测速组</label><select id="upload-group"><option value="">请选择当前连接的组</option>${options}</select></div>
+ <div class="srow"><span class="k">确认节点</span><label class="check"><input type="checkbox" id="upload-confirm-node">我确认所选组当前节点是要公开的目标节点；其他节点不上传</label><div class="help">请先在 MeowX 中确认节点身份；程序不会依据名称猜测。切走停止上报，切回后重新分段。</div></div>
+ <div class="srow"><label class="k" for="upload-group-alias">公开组别名</label><input id="upload-group-alias" value="${esc(s.groupAlias)}" maxlength="64" autocomplete="off"></div>
+ <div class="srow"><label class="k" for="upload-node-alias">公开节点别名</label><input id="upload-node-alias" value="${esc(s.nodeAlias)}" maxlength="55" autocomplete="off"><div class="help">作为中性前缀，程序为每个实际选中节点追加不同的不透明标识；不会上传真实节点名称。</div></div>
+ <div class="srow"><label class="k" for="upload-token">独立写入密钥</label><input id="upload-token" type="password" autocomplete="new-password" placeholder="${u.hasToken?'已保存，留空不修改':'未设置'}"><div class="help">仅保存在本机，并使用当前 Windows 用户的凭据保护。${u.hasToken?'<label class="check"><input type="checkbox" id="upload-clear-token">清除密钥</label>':''}</div></div>
+ <div class="srow"><span class="k">订阅用量同步</span><div><span id="quota-status">正在读取…</span> <button type="button" class="btn" id="refresh-quota">刷新状态</button><div class="help">读取已绑定订阅的本地缓存；显示的是缓存更新时间，不会主动刷新订阅。</div></div></div>
+ <div class="srow"><span class="k">本地探针后台</span><div><span id="probe-guard-status">正在读取…</span> <button type="button" class="btn" id="guard-start">启动</button> <button type="button" class="btn" id="guard-stop">停止</button><div class="help">Windows 用户登录后启动；手动停止后保持停止，需手动重新启动。用户未登录时不运行。</div></div></div>
+ <div class="srow"><span class="k">上传状态</span><div><span id="upload-status">${esc(u.status||'尚未上传')} · 待发送 ${int(u.pending)} 条${u.dropped?' · 未发送 '+int(u.dropped)+' 条':''}</span> <button type="button" class="btn" id="refresh-upload">刷新状态</button></div></div>
+ <div class="srow"><span></span><button type="button" class="btn primary" id="save-upload">保存上传设置</button></div>`)
+}
 function facts(){const H=S.hist,v=f=>H?f(H):'—';return `<div><small>首次采集</small><b>${v(H=>new Date(H.since).toLocaleDateString('zh-CN'))}</b></div><div><small>明细记录</small><b>${v(H=>int(H.rows.length)+' 条')}</b></div><div><small>内核累计增量</small><b>${v(H=>bytes(H.coreUp+H.coreDown))}</b></div><div><small>采集中断 / 重置</small><b>${v(H=>int(H.gaps)+' 次')}</b></div>`}
 function bindSettings(){
  const c=S.conf;if(!c)return;
@@ -321,6 +342,11 @@ function bindSettings(){
  $('#autostart').onchange=e=>save({autostart:e.target.checked},false,()=>e.target.checked=c.autostart);
  $('#silent').onchange=e=>save({silent:e.target.checked},false,()=>e.target.checked=c.settings.silent);
  $('#save-ret').onclick=()=>{const n=Number($('#retention').value);if(!Number.isInteger(n)||n<1||n>3650)return notify('保留天数需为 1 到 3650 的整数','error');save({retentionDays:n},true).then(()=>refreshHistory())};
+ async function refreshGuard(){try{const g=await api('api/probe-guard');const labels={running:'运行中',starting:'启动中',stopping:'停止中',stopped:'已手动停止',retrying:'异常重试中',unhealthy:'健康检查失败', 'port-in-use':'端口被占用', 'not-running':'未运行'};if($('#probe-guard-status'))$('#probe-guard-status').textContent=labels[g.state]||'未运行'}catch{if($('#probe-guard-status'))$('#probe-guard-status').textContent='状态不可用'}}
+ for(const action of ['start','stop'])$('#guard-'+action)?.addEventListener('click',async()=>{try{await api('api/probe-guard',{action});notify(action==='stop'?'已请求停止后台探针':'已请求启动后台探针');setTimeout(refreshGuard,1000)}catch(e){notify(e.message,'error')}});refreshGuard();
+ async function refreshQuota(){try{const q=await api('api/quota-settings');if($('#quota-status'))$('#quota-status').textContent=q.profile?(q.status||'等待采集')+(q.pending?' · 待同步':''):'尚未绑定订阅'}catch{if($('#quota-status'))$('#quota-status').textContent='状态不可用'}}$('#refresh-quota')?.addEventListener('click',refreshQuota);refreshQuota();
+ $('#refresh-upload')?.addEventListener('click',async()=>{try{const u=await api('api/upload-settings');$('#upload-status').textContent=(u.status||'尚未上传')+' · 待发送 '+int(u.pending)+' 条'+(u.dropped?' · 未发送 '+int(u.dropped)+' 条':'')}catch(e){notify(e.message,'error')}});
+ $('#save-upload')?.addEventListener('click',async()=>{let selection;try{selection=JSON.parse($('#upload-group').value)}catch{selection=['','','','']}try{S.upload=await api('api/upload-settings',{enabled:$('#upload-enabled').checked,endpoint:$('#upload-endpoint').value,source:selection[0],group:selection[1],targetNode:selection[2],targetUrl:selection[3],confirmNode:$('#upload-confirm-node').checked,groupAlias:$('#upload-group-alias').value,nodeAlias:$('#upload-node-alias').value,token:$('#upload-token').value,clearToken:!!$('#upload-clear-token')?.checked});notify('上传设置已保存');render()}catch(e){notify(e.message,'error')}});
  $('#open-dir').onclick=()=>api('api/open-dir',{}).catch(e=>notify(e.message,'error'));
  let armed=0;$('#clear').onclick=async e=>{const b=e.currentTarget;
   if(!armed){b.classList.add('armed');b.textContent='再次点击确认清空';armed=setTimeout(()=>{armed=0;b.classList.remove('armed');b.textContent='清空全部流量历史'},4000);return}
@@ -333,6 +359,36 @@ async function save(patch,rerender=false,revert){
 
 // ---------- shell ----------
 async function api(path,body){const r=await fetch(path,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error((await r.text()).trim()||'HTTP '+r.status);return r.json()}
+
+function latencyChart(points,w,h){
+ const L=58,R=12,T=12,B=28,iw=Math.max(10,w-L-R),ih=h-T-B,y0=T+ih;
+ const times=points.map(p=>Date.parse(p.time)),min=times[0],max=times[times.length-1],span=Math.max(max-min,60000);
+ const top=Math.max(10,Math.ceil(points.reduce((max,p)=>Math.max(max,p.delay||0),0)/50)*50),X=t=>L+(t-min)/span*iw,Y=v=>y0-v/top*ih;
+ let out=`<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="选中节点测速记录，单位毫秒">`;
+ for(let i=0;i<=4;i++){let y=y0-ih*i/4;out+=`<line class="gridline" x1="${L}" x2="${w-R}" y1="${y}" y2="${y}"/><text class="axis" x="${L-8}" y="${y+4}" text-anchor="end">${Math.round(top*i/4)} ms</text>`}
+ let prev=null;
+ for(const p of points){const x=X(Date.parse(p.time)),ok=p.delay>0,y=ok?Y(p.delay):y0;
+  if(ok&&p.fresh&&prev&&prev.fresh&&prev.node===p.node&&prev.testUrl===p.testUrl&&prev.segment===p.segment)out+=`<line class="sd" stroke-width="1.6" x1="${prev.x}" y1="${prev.y}" x2="${x}" y2="${y}"/>`;
+  const tip=new Date(p.time).toLocaleString()+'\n节点：'+p.node+'\n'+(ok?p.delay+' ms':'测速失败（0）');
+  out+=`<circle cx="${x}" cy="${y}" r="${ok?4:5}" fill="${ok?'var(--down)':'var(--bad)'}" data-tip="${esc(tip)}"/>`;
+  prev=ok?{x,y,node:p.node,testUrl:p.testUrl,segment:p.segment,fresh:p.fresh}:null;
+ }
+ out+=`<text class="axis" x="${L}" y="${h-6}">${esc(new Date(min).toLocaleString())}</text><text class="axis" x="${w-R}" y="${h-6}" text-anchor="end">${esc(new Date(max).toLocaleString())}</text></svg>`;
+ return out;
+}
+function latencyPage(){
+ const data=S.latency;if(!data)return '<div class="card empty">正在读取测速记录…</div>';
+ const points=data.points||[], groups=data.groups||[], options=new Map();
+ for(const g of groups)options.set(JSON.stringify([g.endpoint,g.group]),g);
+ for(const p of points){const k=JSON.stringify([p.endpoint,p.group]);if(!options.has(k))options.set(k,p)}
+ if(!options.has(S.latencyKey))S.latencyKey=options.keys().next().value||'';
+ const selected=options.get(S.latencyKey),rs=points.filter(p=>JSON.stringify([p.endpoint,p.group])===S.latencyKey&&Number.isFinite(Date.parse(p.time))).sort((a,b)=>Date.parse(a.time)-Date.parse(b.time));
+ let select=`<select id="latency-group" aria-label="选择自动测速组">${[...options].map(([k,g])=>`<option value="${esc(k)}" ${k===S.latencyKey?'selected':''}>${esc(g.group)} · 当前节点：${esc(g.node||"未知")}</option>`).join('')}</select>`;
+ let message=!data.connected?'控制器已断开，显示已保存的记录。':data.error?'读取测速数据失败：'+data.error:!groups.length?'未发现 URLTest 自动测速组。':'等待选中节点产生可读取的测速结果。';
+ let body=rs.length?`<div class="chart" style="overflow-x:auto">${latencyChart(rs,innerWidth_(),240)}</div><div class="note">蓝点为成功，红点为失败；切换节点、断连、失败或选中前的旧记录处断开曲线。鼠标悬停查看测速时间与节点。</div>`:`<div class="empty">${esc(message)}</div>`;
+ return card('自动测速组 · 选中节点的测速记录',options.size?select:'',body)+`<div class="note">仅读取 mihomo 已有结果，不触发测速。每个点表示读取时组的选中节点及该节点对应测试地址最近一次结果；测速时未必选中该节点。未运行期间及内核历史覆盖后无法补齐。${selected?' 当前记录：'+esc(selected.group):''}${!data.connected?' 控制器已断开。':data.error?' 读取失败：'+esc(data.error):''}</div>`;
+}
+
 let toastTimer;function notify(msg,kind='ok'){document.querySelector('.toast')?.remove();const t=document.createElement('div');t.className='toast '+(kind==='error'?'error':'');t.setAttribute('role','status');t.textContent=msg;document.body.append(t);clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.remove(),kind==='error'?6000:2500)}
 const media=matchMedia('(prefers-color-scheme: dark)');
 function applyTheme(){const t=S.conf?.settings.theme||load('theme','system');keep('theme',t);document.documentElement.dataset.theme=t==='system'?(media.matches?'dark':'light'):t}
@@ -344,7 +400,7 @@ function updateStatus(){const L=S.live,ok=!!L?.connected;
  if($('#cs-dot')){$('#cs-dot').className='dot '+(ok?'good':'bad');$('#cs-title').textContent=ok?'已连接':'未连接';$('#cs-detail').textContent=L?(ok?(L.endpoint+(L.version?' · mihomo '+L.version:'')+' · 每秒采集'):((L.endpoint?L.endpoint+'：':'')+L.status)):''}}
 function setupBar(){
  const p=S.page,data=['overview','apps','hosts','nodes'].includes(p);
- $('#filterbar').hidden=p==='settings';$('#presets').hidden=!data;$('#dates').hidden=!data||S.preset!=='custom';
+ $('#filterbar').hidden=p==='settings'||p==='latency';$('#presets').hidden=!data;$('#dates').hidden=!data||S.preset!=='custom';
  $('#group-wrap').hidden=$('#sort').hidden=p!=='live';$('#search').hidden=!(p in KINDS||p==='live');$('#export').hidden=!(p in KINDS);
  $('#search').placeholder=p==='live'?'搜索应用、地址、节点、规则':KINDS[p]?.search||'搜索';
  $('#presets').querySelectorAll('button').forEach(b=>{b.classList.toggle('on',b.dataset.p===S.preset);b.setAttribute('aria-checked',b.dataset.p===S.preset)});
@@ -352,9 +408,11 @@ function setupBar(){
 function render(){
  const p=S.page,el=$('#content');$('#title').textContent=NAV.find(n=>n.id===p).label;setupBar();
  if(p==='settings'){el.innerHTML=settingsPage();bindSettings();return}
- el.innerHTML=p==='overview'?overview():p==='live'?live():ranking(p)}
+ el.innerHTML=p==='overview'?overview():p==='live'?live():p==='latency'?latencyPage():ranking(p);
+ if(p==='latency'&&$('#latency-group'))$('#latency-group').onchange=e=>{S.latencyKey=e.target.value;render()}}
 function nav(p){if(!NAV.some(n=>n.id===p))return;const same=p===S.page;S.page=p;keep('page',p);if(!same){S.search='';$('#search').value=''}
  document.querySelectorAll('.nav-item').forEach(b=>{b.classList.toggle('active',b.dataset.nav===p);b.toggleAttribute('aria-current',b.dataset.nav===p)});
+ if(p==='settings')api('api/upload-settings').then(u=>{S.upload=u;if(S.page==='settings')render()}).catch(()=>{});
  if(p==='settings')api('api/settings').then(c=>{S.conf=c;applyTheme();if(S.page==='settings')render()}).catch(e=>notify(e.message,'error'));
  const el=$('#content');el.classList.add('enter');render();$('#main').scrollTop=0;setTimeout(()=>el.classList.remove('enter'),450)}
 
@@ -385,7 +443,7 @@ async function tickLive(){try{const L=await api('api/live'),now=Date.now(),next=
   for(const c of L.live||[]){const p=S.prevLive.get(c.id);c._sd=c._su=0;if(p&&now>p.t){const dt=(now-p.t)/1000;c._sd=Math.max(0,(c.download-p.d)/dt);c._su=Math.max(0,(c.upload-p.u)/dt)}next.set(c.id,{d:c.download,u:c.upload,t:now})}
   S.prevLive=next;S.live=L}catch{S.live={connected:false,status:'采集程序连接中断',live:[],trend:[]}}
  updateStatus();if(S.page==='live')render();setTimeout(tickLive,1000)}
-async function tickHistory(){await refreshHistory();if(['overview','apps','hosts','nodes'].includes(S.page))render();else if($('#facts'))$('#facts').innerHTML=facts();setTimeout(tickHistory,5000)}
+async function tickHistory(){await refreshHistory();try{S.latency=await api('api/latency')}catch{};if(S.page==='latency')render();if(['overview','apps','hosts','nodes'].includes(S.page))render();else if($('#facts'))$('#facts').innerHTML=facts();setTimeout(tickHistory,5000)}
 api('api/settings').then(c=>{S.conf=c;applyTheme()}).catch(()=>{});
 nav(S.page);tickLive();tickHistory();
 </script>

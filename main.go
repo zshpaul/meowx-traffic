@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -69,26 +70,35 @@ type Disk struct {
 	CoreUp   int64
 	CoreDown int64
 	Gaps     int
+	Latency  []LatencyPoint `json:"latency,omitempty"`
 }
 type Monitor struct {
-	mu        sync.Mutex
-	disk      Disk
-	prev      *Snapshot
-	last      time.Time
-	connected bool
-	status    string
-	saveError string
-	version   string
-	base      string
-	polls     int
-	live      []Connection
-	upRate    float64
-	downRate  float64
-	trend     [][3]float64
-	counted   map[string]bool
-	retention int
-	store     *Store
-	file      string
+	mu                sync.Mutex
+	disk              Disk
+	prev              *Snapshot
+	last              time.Time
+	connected         bool
+	status            string
+	saveError         string
+	version           string
+	base              string
+	polls             int
+	live              []Connection
+	upRate            float64
+	downRate          float64
+	trend             [][3]float64
+	counted           map[string]bool
+	retention         int
+	store             *Store
+	file              string
+	latencyGroups     []LatencyGroup
+	latencyError      string
+	generation        uint64
+	latencySegment    string
+	latencySelections map[string]latencySelection
+	uploader          *Uploader
+	quota             *quotaSync
+	nodeRate          nodeRateTracker
 }
 
 func newDisk() Disk {
@@ -211,6 +221,13 @@ func (m *Monitor) prune(now time.Time) {
 		days = 30
 	}
 	cut := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
+	kept := m.disk.Latency[:0]
+	for _, p := range m.disk.Latency {
+		if p.Time.Local().Format("2006-01-02") >= cut {
+			kept = append(kept, p)
+		}
+	}
+	m.disk.Latency = kept
 	for k, r := range m.disk.Rows {
 		if r.Day < cut {
 			delete(m.disk.Rows, k)
@@ -298,6 +315,9 @@ func (m *Monitor) settings() Settings {
 }
 
 func (m *Monitor) poll() {
+	m.mu.Lock()
+	generation := m.generation
+	m.mu.Unlock()
 	base, secret, err := resolve(m.settings())
 	if err == nil {
 		var s Snapshot
@@ -307,7 +327,14 @@ func (m *Monitor) poll() {
 			err = validate(s)
 		}
 		if err == nil {
+			m.mu.Lock()
+			if m.generation != generation {
+				m.mu.Unlock()
+				return
+			}
+			m.mu.Unlock()
 			m.ingest(s, requestStart)
+			m.observeNodeRate(base, s, requestStart, generation)
 			m.mu.Lock()
 			need := m.version == "" && m.polls%30 == 0
 			m.polls++
@@ -322,6 +349,10 @@ func (m *Monitor) poll() {
 				}
 			}
 			m.mu.Lock()
+			if m.generation != generation {
+				m.mu.Unlock()
+				return
+			}
 			m.connected = true
 			m.base = base
 			m.status = "已连接 MeowX · 每秒采集"
@@ -333,7 +364,14 @@ func (m *Monitor) poll() {
 		}
 	}
 	m.mu.Lock()
+	if m.generation != generation {
+		m.mu.Unlock()
+		return
+	}
 	m.connected = false
+	m.clearNodeRate(time.Now())
+	m.latencySegment = ""
+	m.latencySelections = nil
 	m.base = base
 	m.version = ""
 	m.polls = 0
@@ -349,6 +387,12 @@ func (m *Monitor) poll() {
 func (m *Monitor) rebase() {
 	m.mu.Lock()
 	m.prev = nil
+	m.clearNodeRate(time.Now())
+	m.generation++
+	m.connected = false
+	m.latencyGroups = nil
+	m.latencySegment = ""
+	m.latencySelections = nil
 	m.counted = nil
 	m.version = ""
 	m.polls = 0
@@ -425,13 +469,15 @@ func getOnly(fn func(w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 func settingsView(st *Store, dir string) map[string]any {
 	s := st.Get()
 	hasSecret := s.Secret != ""
+	hasUploadToken := s.Upload.TokenCipher != ""
+	s.Upload.TokenCipher = ""
 	s.Secret = ""
 	auto, _, autoErr := endpoint()
 	autoError := ""
 	if autoErr != nil {
 		autoError = autoErr.Error()
 	}
-	return map[string]any{"settings": s, "hasSecret": hasSecret, "autostart": mygo.App.OpenAtLogin(), "dataDir": dir, "version": version, "autoEndpoint": auto, "autoError": autoError}
+	return map[string]any{"settings": s, "hasSecret": hasSecret, "hasUploadToken": hasUploadToken, "autostart": mygo.App.OpenAtLogin(), "dataDir": dir, "version": version, "autoEndpoint": auto, "autoError": autoError}
 }
 
 type settingsInput struct {
@@ -448,7 +494,7 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 		if m.prev != nil && m.connected {
 			up, down = *m.prev.UploadTotal, *m.prev.DownloadTotal
 		}
-		jsonOut(w, map[string]any{"status": m.status, "connected": m.connected, "version": m.version, "endpoint": m.base, "saveError": m.saveError, "last": m.last, "live": m.live, "upRate": m.upRate, "downRate": m.downRate, "trend": m.trend, "uploadTotal": up, "downloadTotal": down})
+		jsonOut(w, map[string]any{"status": m.status, "connected": m.connected, "version": m.version, "endpoint": m.base, "saveError": m.saveError, "last": m.last, "live": m.live, "upRate": m.upRate, "downRate": m.downRate, "trend": m.trend, "uploadTotal": up, "downloadTotal": down, "nodeRate": m.nodeRate.snapshot})
 	}))
 	mux.HandleFunc(root+"api/history", getOnly(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -460,6 +506,14 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 		m.mu.Unlock()
 		jsonOut(w, out)
 	}))
+	mux.HandleFunc(root+"api/latency", getOnly(func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		jsonOut(w, map[string]any{"points": m.disk.Latency, "groups": m.latencyGroups, "error": m.latencyError, "connected": m.connected})
+	}))
+	mux.HandleFunc(root+"api/upload-settings", uploadSettingsRoute(m, st))
+	mux.HandleFunc(root+"api/probe-guard", probeGuardRoute(dir))
+	mux.HandleFunc(root+"api/quota-settings", quotaSettingsRoute(m.quota, st))
 	mux.HandleFunc(root+"api/settings", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			jsonOut(w, settingsView(st, dir))
@@ -484,7 +538,9 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 			}
 			next, err := st.Update(func(s *Settings) {
 				secret := s.Secret
+				upload := s.Upload
 				*s = in.Settings
+				s.Upload = upload
 				if in.Secret == "" && !in.ClearSecret {
 					s.Secret = secret
 				}
@@ -521,7 +577,9 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 	}))
 	mux.HandleFunc(root+"api/clear", post(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
+		latency := m.disk.Latency
 		m.disk = newDisk()
+		m.disk.Latency = latency
 		m.counted = nil
 		m.mu.Unlock()
 		if err := m.save(); err != nil {
@@ -572,6 +630,8 @@ func main() {
 		mygo.Dialog.Error("历史记录读取失败", "为保护历史数据，程序没有覆盖原文件："+err.Error())
 		return
 	}
+	m.uploader = newUploader(filepath.Join(dir, "upload-queue.json"), st)
+	m.quota = newQuotaSync(dir, filepath.Join(os.Getenv("APPDATA"), "com.miaomiaowux", "MeowX", "config.json"), st, &m.uploader.sendMu)
 	mygo.Theme.SetSource(mygo.ThemeSource(st.Get().Theme))
 	st.OnChange(func(s Settings) {
 		mygo.Theme.SetSource(mygo.ThemeSource(s.Theme))
@@ -595,6 +655,26 @@ func main() {
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 3 * time.Second}
 	go srv.Serve(ln)
 	stop := make(chan struct{})
+	doneUpload := make(chan struct{})
+	go func() { defer close(doneUpload); m.uploader.run(stop, m) }()
+	doneQuota := make(chan struct{})
+	go func() { defer close(doneQuota); m.quota.run(stop) }()
+	doneNodeRate := make(chan struct{})
+	go func() { defer close(doneNodeRate); m.uploader.runNodeRate(stop, m) }()
+	doneLatency := make(chan struct{})
+	go func() {
+		defer close(doneLatency)
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			m.pollLatency()
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+			}
+		}
+	}()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -621,7 +701,29 @@ func main() {
 			}
 		}
 	}()
-	desktop("http://"+ln.Addr().String()+root, st)
+	appURL := "http://" + ln.Addr().String() + root
+	if slices.Contains(os.Args, "--local-access-file") {
+		encrypted, e := encryptToken(appURL)
+		if e != nil {
+			panic("无法保护本机访问入口")
+		}
+		name := filepath.Join(dir, "local-access.dpapi")
+		f, e := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if e != nil {
+			panic("无法创建本机访问入口")
+		}
+		if _, e = f.WriteString(encrypted); e != nil {
+			f.Close()
+			os.Remove(name)
+			panic("无法保存本机访问入口")
+		}
+		if e = f.Close(); e != nil {
+			os.Remove(name)
+			panic("无法保存本机访问入口")
+		}
+		defer os.Remove(name)
+	}
+	desktop(appURL, st)
 	go func() {
 		time.Sleep(8 * time.Second)
 		if !app.IsReady() {
@@ -633,6 +735,10 @@ func main() {
 	err = app.Run()
 	close(stop)
 	<-done
+	<-doneLatency
+	<-doneUpload
+	<-doneQuota
+	<-doneNodeRate
 	if saveErr := m.save(); saveErr != nil {
 		os.WriteFile(filepath.Join(dir, "save-error.log"), []byte(saveErr.Error()), 0600)
 		mygo.Dialog.Error("流量历史保存失败", saveErr.Error())

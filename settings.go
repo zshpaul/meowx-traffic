@@ -12,12 +12,15 @@ import (
 
 // Settings are the user's choices, kept in settings.json next to the history.
 type Settings struct {
-	Controller    string `json:"controller"` // "auto" reads MeowX's config, "manual" uses Address/Secret
-	Address       string `json:"address"`
-	Secret        string `json:"secret,omitempty"`
-	RetentionDays int    `json:"retentionDays"`
-	Theme         string `json:"theme"` // system | light | dark
-	Silent        bool   `json:"silent"`
+	Controller    string         `json:"controller"` // "auto" reads MeowX's config, "manual" uses Address/Secret
+	Address       string         `json:"address"`
+	Secret        string         `json:"secret,omitempty"`
+	RetentionDays int            `json:"retentionDays"`
+	Theme         string         `json:"theme"` // system | light | dark
+	Silent        bool           `json:"silent"`
+	Upload        UploadSettings `json:"upload"`
+	QuotaProfile  string         `json:"quotaProfile,omitempty"`
+	QuotaGroupID  string         `json:"quotaGroupId,omitempty"`
 }
 
 func defaultSettings() Settings {

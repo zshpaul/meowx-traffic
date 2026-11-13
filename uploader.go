@@ -185,12 +185,6 @@ func (u *Uploader) enqueue(p LatencyPoint) {
 	if u.status == "上传队列无法读取，已暂停" {
 		return
 	}
-	if len(u.queue.Acked) >= 20000 {
-		if err := u.pruneAckedLocked(time.Now()); err != nil {
-			u.status = "保存上传队列失败"
-			return
-		}
-	}
 	id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
 	if _, ok := u.queue.Acked[id]; ok {
 		return
@@ -200,8 +194,8 @@ func (u *Uploader) enqueue(p LatencyPoint) {
 			return
 		}
 	}
-	if len(u.queue.Samples) >= uploadQueueLimit || len(u.queue.Acked) >= 20000 {
-		u.status = "上传队列或确认记录已满，等待处理"
+	if len(u.queue.Samples) >= uploadQueueLimit {
+		u.status = "上传队列已满，等待处理"
 		return
 	}
 	n := s.NodeAlias + "-" + opaqueID(u.queue.Seed, s.GroupID, p.Node)[:8]

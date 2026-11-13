@@ -59,6 +59,23 @@ func TestUploaderPrunesExpiredAcknowledgementsWithEmptyQueue(t *testing.T) {
 		t.Fatal("upload did not recover after pruning")
 	}
 }
+
+func TestUploaderAcceptsSamplesWithManyUnexpiredAcknowledgements(t *testing.T) {
+	u, st, point := uploadFixture(t, "http://127.0.0.1:8796")
+	for i := 0; i < 20000; i++ {
+		u.queue.Acked[fmt.Sprintf("recent-%d", i)] = time.Now()
+	}
+	u.enqueue(point)
+	u.enqueue(point)
+	if len(u.queue.Samples) != 1 {
+		t.Fatal("recent confirmations blocked a new sample or deduplication failed")
+	}
+	u = newUploader(u.file, st)
+	u.enqueue(point)
+	if len(u.queue.Samples) != 1 || len(u.queue.Acked) != 20000 {
+		t.Fatal("recent confirmations or pending sample were lost after restart")
+	}
+}
 func TestUploaderRetryPersistenceAndPrivacy(t *testing.T) {
 	var first []byte
 	count := 0

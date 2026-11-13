@@ -496,6 +496,18 @@ type settingsInput struct {
 	Autostart   *bool `json:"autostart"`
 }
 
+func applyGeneralSettings(s *Settings, in settingsInput) {
+	secret := s.Secret
+	upload := s.Upload
+	profile, group := s.QuotaProfile, s.QuotaGroupID
+	*s = in.Settings
+	s.Upload = upload
+	s.QuotaProfile, s.QuotaGroupID = profile, group
+	if in.Secret == "" && !in.ClearSecret {
+		s.Secret = secret
+	}
+}
+
 func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 	mux.HandleFunc(root+"api/live", getOnly(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -547,13 +559,7 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 				}
 			}
 			next, err := st.Update(func(s *Settings) {
-				secret := s.Secret
-				upload := s.Upload
-				*s = in.Settings
-				s.Upload = upload
-				if in.Secret == "" && !in.ClearSecret {
-					s.Secret = secret
-				}
+				applyGeneralSettings(s, in)
 			})
 			if err != nil {
 				http.Error(w, err.Error(), 400)

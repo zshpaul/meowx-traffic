@@ -39,7 +39,12 @@ func TestStoreMigratesAndPersists(t *testing.T) {
 	}
 	called := 0
 	st.OnChange(func(Settings) { called++ })
-	if _, err := st.Update(func(s *Settings) { s.RetentionDays = 7; s.Controller = "manual"; s.Address = "127.0.0.1:9090"; s.Secret = "x" }); err != nil {
+	if _, err := st.Update(func(s *Settings) {
+		s.RetentionDays = 7
+		s.Controller = "manual"
+		s.Address = "127.0.0.1:9090"
+		s.Secret = "x"
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Update(func(s *Settings) { s.RetentionDays = -1 }); err == nil || st.Get().RetentionDays != 7 {
@@ -139,6 +144,22 @@ func TestRoutes(t *testing.T) {
 	}
 	if _, out := send("POST", "api/test", "application/json", `{"controller":"manual","address":"`+core.URL+`","secret":"bad"}`); out["ok"] != false {
 		t.Fatal(out)
+	}
+	if _, err := st.Update(func(s *Settings) {
+		s.QuotaProfile, s.QuotaGroupID = "bound-profile", "bound-group"
+		s.Upload.GroupID = "upload-group"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stale settingsInput
+	if err := json.Unmarshal([]byte(`{"controller":"auto","theme":"dark","quotaProfile":"stale-profile","quotaGroupId":"stale-group","upload":{"groupId":"injected"}}`), &stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Update(func(s *Settings) { applyGeneralSettings(s, stale) }); err != nil {
+		t.Fatal(err)
+	}
+	if s := st.Get(); s.Theme != "dark" || s.QuotaProfile != "bound-profile" || s.QuotaGroupID != "bound-group" || s.Upload.GroupID != "upload-group" {
+		t.Fatal("settings save changed independent upload or quota bindings")
 	}
 	if code, _ := send("POST", "api/clear", "application/json", "{}"); code != 200 || len(m.disk.Rows) != 0 {
 		t.Fatal("clear failed")

@@ -151,6 +151,30 @@ func (u *Uploader) saveLocked() error {
 	}
 	return os.Rename(u.file+".tmp", u.file)
 }
+
+// Expired acknowledgements are no longer needed for the server's 30-day window.
+// Persist the removal even with an empty upload queue so the cap can recover.
+func (u *Uploader) pruneAckedLocked(now time.Time) error {
+	expired := make(map[string]time.Time)
+	cut := now.Add(-30 * 24 * time.Hour)
+	for id, t := range u.queue.Acked {
+		if t.Before(cut) {
+			expired[id] = t
+			delete(u.queue.Acked, id)
+		}
+	}
+	if len(expired) == 0 {
+		return nil
+	}
+	if err := u.saveLocked(); err != nil {
+		for id, t := range expired {
+			u.queue.Acked[id] = t
+		}
+		return err
+	}
+	return nil
+}
+
 func (u *Uploader) enqueue(p LatencyPoint) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -160,6 +184,12 @@ func (u *Uploader) enqueue(p LatencyPoint) {
 	}
 	if u.status == "上传队列无法读取，已暂停" {
 		return
+	}
+	if len(u.queue.Acked) >= 20000 {
+		if err := u.pruneAckedLocked(time.Now()); err != nil {
+			u.status = "保存上传队列失败"
+			return
+		}
 	}
 	id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
 	if _, ok := u.queue.Acked[id]; ok {
@@ -239,16 +269,20 @@ func (u *Uploader) flush() {
 		return
 	}
 	u.mu.Lock()
-	if s.Binding == "" || s.TargetNode == "" || s.TargetURL == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || u.status == "上传队列无法读取，已暂停" || u.blocked || time.Now().Before(u.next) || len(u.queue.Samples) == 0 {
+	if s.Binding == "" || s.TargetNode == "" || s.TargetURL == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || u.status == "上传队列无法读取，已暂停" {
+		u.mu.Unlock()
+		return
+	}
+	if err := u.pruneAckedLocked(time.Now()); err != nil {
+		u.status = "保存上传队列失败"
+		u.mu.Unlock()
+		return
+	}
+	if u.blocked || time.Now().Before(u.next) || len(u.queue.Samples) == 0 {
 		u.mu.Unlock()
 		return
 	}
 	// Old samples cannot be submitted to the v1 endpoint; discard only with visible accounting.
-	for id, t := range u.queue.Acked {
-		if t.Before(time.Now().Add(-30 * 24 * time.Hour)) {
-			delete(u.queue.Acked, id)
-		}
-	}
 	before := append([]UploadSample(nil), u.queue.Samples...)
 	oldDropped := u.queue.Dropped
 	kept := u.queue.Samples[:0]

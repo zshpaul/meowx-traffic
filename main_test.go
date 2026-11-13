@@ -62,6 +62,23 @@ func snap(u, d int64, cs ...Connection) Snapshot {
 	return Snapshot{UploadTotal: &u, DownloadTotal: &d, Connections: cs}
 }
 func mon() *Monitor { return &Monitor{disk: Disk{Rows: map[string]*Row{}}} }
+
+func TestRebaseRejectsInflightControllerSnapshot(t *testing.T) {
+	m := mon()
+	now := time.Now()
+	m.ingest(snap(10, 20), now)
+	oldGeneration := m.generation
+	m.rebase()
+	if m.ingestGeneration(snap(1000, 2000), now.Add(time.Second), oldGeneration) {
+		t.Fatal("accepted a response started before controller rebase")
+	}
+	if m.prev != nil || m.disk.CoreUp != 0 || m.disk.CoreDown != 0 {
+		t.Fatal("stale response modified the new controller baseline")
+	}
+	if !m.ingestGeneration(snap(50, 60), now.Add(2*time.Second), m.generation) || m.disk.CoreUp != 0 || m.disk.CoreDown != 0 {
+		t.Fatal("new controller did not establish a clean baseline")
+	}
+}
 func TestBaselineDeltaResetAndReconnect(t *testing.T) {
 	m := mon()
 	now := time.Now()

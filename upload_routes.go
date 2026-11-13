@@ -144,7 +144,9 @@ func uploadSettingsRoute(m *Monitor, st *Store) http.HandlerFunc {
 				http.Error(w, "队列仍有待发送记录；请先恢复上传清空队列，再更改目标或别名", 409)
 				return
 			}
-			if destinationChanged && m.quota != nil {
+			// A scope change also creates a new group ID. Do not strand an
+			// unacknowledged quota snapshot under the old group.
+			if changed && m.quota != nil {
 				m.quota.mu.Lock()
 				pending := m.quota.disk.Pending
 				m.quota.mu.Unlock()

@@ -19,6 +19,63 @@ import (
 type quotaTransport func(*http.Request) (*http.Response, error)
 
 func (f quotaTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestQuotaExplicitRebindPreservesPendingAndRestarts(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte(`{"profiles":[{"id":"fixture","lastUpdateDate":"2026-11-13T00:00:00Z","subscriptionInfo":{"upload":10,"download":20,"total":100}}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	st := loadStore(dir)
+	cipher, err := encryptToken("fixture-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Update(func(s *Settings) {
+		s.QuotaProfile, s.QuotaGroupID = "fixture", "old_group"
+		s.Upload = UploadSettings{Enabled: true, Endpoint: "http://127.0.0.1:8796", GroupID: "new_group", TokenCipher: cipher}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	u := newUploader(filepath.Join(dir, "upload.json"), st)
+	q := newQuotaSync(dir, config, st, &u.sendMu)
+	q.disk = quotaDisk{Profile: "fixture", GroupID: "old_group", Pending: true, Latest: quotaSnapshot{GroupID: "old_group", Revision: 7}}
+	if err := q.save(); err != nil {
+		t.Fatal(err)
+	}
+	bind := func() int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/api/quota-settings", strings.NewReader(`{"profile":"fixture"}`))
+		r.Header.Set("Content-Type", "application/json")
+		quotaSettingsRoute(q, st)(w, r)
+		return w.Code
+	}
+	if bind() != http.StatusConflict || !q.disk.Pending || st.Get().QuotaGroupID != "old_group" {
+		t.Fatal("pending old snapshot was not preserved")
+	}
+	q.disk.Pending = false
+	if err := q.save(); err != nil {
+		t.Fatal(err)
+	}
+	if code := bind(); code != http.StatusOK || st.Get().QuotaGroupID != "new_group" {
+		t.Fatalf("acknowledged binding could not be changed: %d", code)
+	}
+	q = newQuotaSync(dir, config, st, &u.sendMu)
+	q.client.Transport = quotaTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "GET" {
+			return quotaResponse(200, `{"version":1,"snapshot":null}`), nil
+		}
+		var sent quotaSnapshot
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil || sent.GroupID != "new_group" || sent.Revision != 1 {
+			t.Error("new group snapshot is invalid")
+		}
+		return quotaResponse(200, `{"version":1,"group_id":"new_group","revision":1,"disposition":"stored"}`), nil
+	})
+	q.tick()
+	if q.disk.Pending || q.disk.GroupID != "new_group" || q.disk.Latest.Revision != 1 {
+		t.Fatalf("new group did not sync after restart: %+v", q.disk)
+	}
+}
 func quotaResponse(code int, body string) *http.Response {
 	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 }

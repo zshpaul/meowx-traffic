@@ -133,6 +133,20 @@ func route(c Connection) string {
 func (m *Monitor) ingest(s Snapshot, now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.ingestLocked(s, now)
+}
+
+func (m *Monitor) ingestGeneration(s Snapshot, now time.Time, generation uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.generation != generation {
+		return false
+	}
+	m.ingestLocked(s, now)
+	return true
+}
+
+func (m *Monitor) ingestLocked(s Snapshot, now time.Time) {
 	if m.counted == nil {
 		m.counted = map[string]bool{}
 	}
@@ -327,13 +341,9 @@ func (m *Monitor) poll() {
 			err = validate(s)
 		}
 		if err == nil {
-			m.mu.Lock()
-			if m.generation != generation {
-				m.mu.Unlock()
+			if !m.ingestGeneration(s, requestStart, generation) {
 				return
 			}
-			m.mu.Unlock()
-			m.ingest(s, requestStart)
 			m.observeNodeRate(base, s, requestStart, generation)
 			m.mu.Lock()
 			need := m.version == "" && m.polls%30 == 0

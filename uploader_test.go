@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,29 @@ func uploadFixture(t *testing.T, endpoint string) (*Uploader, *Store, LatencyPoi
 		t.Fatal(err)
 	}
 	return u, st, LatencyPoint{Endpoint: s.Source, Group: s.Group, Node: "private-node", TestURL: "private-test-url", Time: now.Add(-time.Second), ObservedAt: now, Delay: &value, Segment: "internal-segment", Fresh: true}
+}
+
+func TestUploaderPrunesExpiredAcknowledgementsWithEmptyQueue(t *testing.T) {
+	u, st, point := uploadFixture(t, "http://127.0.0.1:8796")
+	expired := time.Now().Add(-31 * 24 * time.Hour)
+	for i := 0; i < 20000; i++ {
+		u.queue.Acked[fmt.Sprintf("expired-%d", i)] = expired
+	}
+	if err := u.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	u.flush()
+	if len(u.queue.Acked) != 0 {
+		t.Fatal("empty queue did not prune expired acknowledgements")
+	}
+	u = newUploader(u.file, st)
+	if len(u.queue.Acked) != 0 {
+		t.Fatal("pruned acknowledgements returned after restart")
+	}
+	u.enqueue(point)
+	if len(u.queue.Samples) != 1 {
+		t.Fatal("upload did not recover after pruning")
+	}
 }
 func TestUploaderRetryPersistenceAndPrivacy(t *testing.T) {
 	var first []byte
@@ -369,6 +393,13 @@ func TestDestinationMigrationPreservesIdentityAndPending(t *testing.T) {
 	if code := send(); code != 409 {
 		t.Fatal("destination changed with unconfirmed quota")
 	}
+	input.Endpoint, input.Token, input.PreserveGroup = st.Get().Upload.Endpoint, "", false
+	input.GroupAlias = "Changed alias"
+	if code := send(); code != 409 || st.Get().Upload.GroupAlias != "Demo group" || !q.disk.Pending {
+		t.Fatal("scope change stranded an unconfirmed quota snapshot")
+	}
+	input.Endpoint, input.Token, input.PreserveGroup = "https://probe.example", "new-secret", true
+	input.GroupAlias = "Demo group"
 	q.disk.Pending = false
 	oldID, oldBinding, oldStart := st.Get().Upload.GroupID, st.Get().Upload.Binding, st.Get().Upload.StartedAt
 	if code := send(); code != 200 {

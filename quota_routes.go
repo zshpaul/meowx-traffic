@@ -44,13 +44,23 @@ func quotaSettingsRoute(q *quotaSync, st *Store) http.HandlerFunc {
 				http.Error(w, "订阅档案不存在、重复或缓存无效", http.StatusBadRequest)
 				return
 			}
-			if q.disk.GroupID != "" && (q.disk.GroupID != s.Upload.GroupID || q.disk.Profile != in.Profile) {
-				http.Error(w, "已有配额绑定，不能自动更改", http.StatusConflict)
+			rebind := q.disk.GroupID != "" && (q.disk.GroupID != s.Upload.GroupID || q.disk.Profile != in.Profile)
+			if rebind && q.disk.Pending {
+				http.Error(w, "原配额快照尚未确认，不能更改绑定", http.StatusConflict)
 				return
 			}
 			if _, err := st.Update(func(s *Settings) { s.QuotaProfile, s.QuotaGroupID = in.Profile, s.Upload.GroupID }); err != nil {
 				http.Error(w, "保存配额绑定失败", http.StatusInternalServerError)
 				return
+			}
+			if rebind {
+				before := q.disk
+				q.disk = quotaDisk{}
+				if err := q.save(); err != nil {
+					q.disk = before
+					http.Error(w, "保存配额队列失败，请重试绑定", http.StatusInternalServerError)
+					return
+				}
 			}
 			q.blocked = false
 			q.next = time.Time{}

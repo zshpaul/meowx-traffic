@@ -104,6 +104,24 @@ func uploadSettingsRoute(m *Monitor, st *Store) http.HandlerFunc {
 			scopeChanged := next.Source != old.Source || next.Group != old.Group || next.TargetNode != old.TargetNode || next.TargetURL != old.TargetURL || next.GroupAlias != old.GroupAlias || next.NodeAlias != old.NodeAlias
 			destinationChanged := next.Endpoint != old.Endpoint || next.TokenCipher != old.TokenCipher
 			changed := destinationChanged || scopeChanged
+			if changed {
+				for _, binding := range m.extraBindings {
+					extra := binding.store.Get().Upload
+					binding.uploader.mu.Lock()
+					queueOK := binding.uploader.status != "上传队列无法读取，已暂停" &&
+						binding.uploader.queue.Binding == extra.Binding && binding.uploader.matchesDestination(extra)
+					binding.uploader.mu.Unlock()
+					binding.quota.mu.Lock()
+					q := binding.quota.disk
+					quotaOK := !binding.quota.blocked && (q.Destination == "" ||
+						(q.Destination == extra.Endpoint && q.Credential == credentialFingerprint(extra.TokenCipher)))
+					binding.quota.mu.Unlock()
+					if !queueOK || !quotaOK {
+						http.Error(w, "附加节点迁移未完成；请先重试迁移，再更改主上传设置", http.StatusConflict)
+						return
+					}
+				}
+			}
 			if in.PreserveGroup && (!old.Enabled || !next.Enabled || old.GroupID == "" || scopeChanged || !destinationChanged) {
 				http.Error(w, "只能在保持原节点、组和别名时迁移目的地", http.StatusBadRequest)
 				return

@@ -66,6 +66,14 @@ func TestCreateExtraBindingRequiresMembershipAndLeavesQuotaUnbound(t *testing.T)
 	if again.Code != http.StatusConflict {
 		t.Fatalf("duplicate binding accepted: %d", again.Code)
 	}
+	if _, err := st.Update(func(v *Settings) { v.Upload.Group = "another-group" }); err != nil {
+		t.Fatal(err)
+	}
+	m.latencyGroups[0].Group = "another-group"
+	other := request(`{"targetNode":"second-node","groupAlias":"other","nodeAlias":"other","confirm":true}`)
+	if other.Code != http.StatusOK {
+		t.Fatalf("same node in a different group was rejected: %d", other.Code)
+	}
 }
 
 func TestExtraBindingKeepsPrimaryQueueAndOnlyAcceptsItsNode(t *testing.T) {
@@ -365,7 +373,7 @@ func TestExtraMigrationPreservesPendingAndRecoversInterruptedWrite(t *testing.T)
 	if err := primary.saveLocked(); err != nil {
 		t.Fatal(err)
 	}
-	m := &Monitor{uploader: primary, extraBindings: extras}
+	m := &Monitor{uploader: primary, quota: &quotaSync{}, extraBindings: extras, connected: true}
 	route := migrateExtraBindingRoute(m, st)
 	call := func(body string) int {
 		w := httptest.NewRecorder()
@@ -381,6 +389,21 @@ func TestExtraMigrationPreservesPendingAndRecoversInterruptedWrite(t *testing.T)
 	u.queue.Destination, u.queue.Credential = st.Get().Upload.Endpoint, credentialFingerprint(cipher)
 	if err := u.saveLocked(); err != nil {
 		t.Fatal(err)
+	}
+	current := st.Get().Upload
+	m.latencyGroups = []LatencyGroup{{Endpoint: current.Source, Group: current.Group, Node: current.TargetNode, TestURL: current.TargetURL}}
+	body, err := json.Marshal(uploadInput{Enabled: true, Endpoint: "https://third.example", Source: current.Source,
+		Group: current.Group, TargetNode: current.TargetNode, TargetURL: current.TargetURL, ConfirmNode: true,
+		GroupAlias: current.GroupAlias, NodeAlias: current.NodeAlias})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	uploadSettingsRoute(m, st)(w, req)
+	if w.Code != http.StatusConflict || st.Get().Upload.Endpoint != current.Endpoint {
+		t.Fatalf("primary changed during interrupted migration: %d", w.Code)
 	}
 	m.extraBindings = loadExtraBindings(root, "unused", st)
 	if len(m.extraBindings) != 1 {

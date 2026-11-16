@@ -170,7 +170,8 @@ func extraBindingRoute(dir string, m *Monitor, primary *Store) http.HandlerFunc 
 				b, err := os.ReadFile(filepath.Join(root, e.Name(), "settings.json"))
 				var existing Settings
 				if err == nil && json.Unmarshal(b, &existing) == nil &&
-					existing.Upload.TargetNode == in.TargetNode {
+					existing.Upload.TargetNode == in.TargetNode && existing.Upload.Source == u.Source &&
+					existing.Upload.Group == u.Group && existing.Upload.TargetURL == u.TargetURL {
 					http.Error(w, "binding already exists", http.StatusConflict)
 					return
 				}

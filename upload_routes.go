@@ -66,6 +66,12 @@ func uploadSettingsRoute(m *Monitor, st *Store) http.HandlerFunc {
 			in.NodeAlias = strings.TrimSpace(in.NodeAlias)
 			m.uploader.sendMu.Lock()
 			defer m.uploader.sendMu.Unlock()
+			// Drain all additional uploads before changing the primary switch
+			// or destination, so disabling remains a synchronous stop.
+			for _, binding := range m.extraBindings {
+				binding.uploader.sendMu.Lock()
+				defer binding.uploader.sendMu.Unlock()
+			}
 			old := st.Get().Upload
 			next := UploadSettings{Enabled: in.Enabled, Endpoint: in.Endpoint, Source: in.Source, Group: in.Group, TargetNode: in.TargetNode, TargetURL: in.TargetURL, Binding: old.Binding, GroupAlias: in.GroupAlias, NodeAlias: in.NodeAlias, GroupID: old.GroupID, TokenCipher: old.TokenCipher, StartedAt: old.StartedAt}
 			if !in.Enabled {

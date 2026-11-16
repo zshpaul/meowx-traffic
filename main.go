@@ -99,6 +99,7 @@ type Monitor struct {
 	uploader          *Uploader
 	quota             *quotaSync
 	nodeRate          nodeRateTracker
+	extraBindings     []*extraBinding
 }
 
 func newDisk() Disk {
@@ -534,6 +535,7 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 		jsonOut(w, map[string]any{"points": m.disk.Latency, "groups": m.latencyGroups, "error": m.latencyError, "connected": m.connected})
 	}))
 	mux.HandleFunc(root+"api/upload-settings", uploadSettingsRoute(m, st))
+	mux.HandleFunc(root+"api/extra-binding", extraBindingRoute(dir, m, st))
 	mux.HandleFunc(root+"api/probe-guard", probeGuardRoute(dir))
 	mux.HandleFunc(root+"api/quota-settings", quotaSettingsRoute(m.quota, st))
 	mux.HandleFunc(root+"api/settings", func(w http.ResponseWriter, r *http.Request) {
@@ -648,6 +650,7 @@ func main() {
 	}
 	m.uploader = newUploader(filepath.Join(dir, "upload-queue.json"), st)
 	m.quota = newQuotaSync(dir, filepath.Join(os.Getenv("APPDATA"), "com.miaomiaowux", "MeowX", "config.json"), st, &m.uploader.sendMu)
+	m.extraBindings = loadExtraBindings(dir, filepath.Join(os.Getenv("APPDATA"), "com.miaomiaowux", "MeowX", "config.json"), st)
 	mygo.Theme.SetSource(mygo.ThemeSource(st.Get().Theme))
 	st.OnChange(func(s Settings) {
 		mygo.Theme.SetSource(mygo.ThemeSource(s.Theme))
@@ -677,6 +680,14 @@ func main() {
 	go func() { defer close(doneQuota); m.quota.run(stop) }()
 	doneNodeRate := make(chan struct{})
 	go func() { defer close(doneNodeRate); m.uploader.runNodeRate(stop, m) }()
+	var extraDone sync.WaitGroup
+	for _, binding := range m.extraBindings {
+		binding := binding
+		extraDone.Add(3)
+		go func() { defer extraDone.Done(); binding.uploader.run(stop, m) }()
+		go func() { defer extraDone.Done(); binding.quota.run(stop) }()
+		go func() { defer extraDone.Done(); binding.uploader.runNodeRate(stop, m) }()
+	}
 	doneLatency := make(chan struct{})
 	go func() {
 		defer close(doneLatency)
@@ -755,6 +766,7 @@ func main() {
 	<-doneUpload
 	<-doneQuota
 	<-doneNodeRate
+	extraDone.Wait()
 	if saveErr := m.save(); saveErr != nil {
 		os.WriteFile(filepath.Join(dir, "save-error.log"), []byte(saveErr.Error()), 0600)
 		mygo.Dialog.Error("流量历史保存失败", saveErr.Error())

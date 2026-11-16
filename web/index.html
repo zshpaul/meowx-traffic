@@ -313,6 +313,8 @@ function uploadSettingsCard(){
  const u=S.upload;if(!u)return card('公开探针上传','', '<div class="note">正在读取上传设置…</div>');
  const s=u.settings||{},groups=u.groups||[],selected=JSON.stringify([s.source||'',s.group||'',s.targetNode||'',s.targetUrl||'']);
  const options=groups.map(g=>{const v=JSON.stringify([g.endpoint,g.group,g.node,g.testUrl]);return `<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(g.group)} · 当前节点：${esc(g.node||"未知")}</option>`}).join('');
+ const activeGroup=groups.find(g=>g.endpoint===s.source&&g.group===s.group&&g.testUrl===s.targetUrl);
+ const extraOptions=(activeGroup?.members||[]).filter(n=>n!==s.targetNode).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
  return card('公开探针上传','',`<p class="note">默认关闭。启用后，仅上传所选组当前选中的指定节点的新测速结果，切换其他节点后暂停；公开页面的所有访客可见以下别名和时间。不会上传控制器地址、真实节点名或测速地址。</p>
  <div class="srow"><label class="k" for="upload-enabled">启用上传</label><label class="check"><input type="checkbox" id="upload-enabled" ${s.enabled?'checked':''}>允许发送到公开探针</label></div>
  <div class="srow"><label class="k" for="upload-endpoint">探针站点地址</label><input id="upload-endpoint" value="${esc(s.endpoint)}" placeholder="https://example.com" autocomplete="off"><div class="help">使用 HTTPS；仅本机测试允许 HTTP。</div></div>
@@ -324,7 +326,12 @@ function uploadSettingsCard(){
  <div class="srow"><span class="k">订阅用量同步</span><div><span id="quota-status">正在读取…</span> <button type="button" class="btn" id="refresh-quota">刷新状态</button><div class="help">读取已绑定订阅的本地缓存；显示的是缓存更新时间，不会主动刷新订阅。</div></div></div>
  <div class="srow"><span class="k">本地探针后台</span><div><span id="probe-guard-status">正在读取…</span> <button type="button" class="btn" id="guard-start">启动</button> <button type="button" class="btn" id="guard-stop">停止</button><div class="help">Windows 用户登录后启动；手动停止后保持停止，需手动重新启动。用户未登录时不运行。</div></div></div>
  <div class="srow"><span class="k">上传状态</span><div><span id="upload-status">${esc(u.status||'尚未上传')} · 待发送 ${int(u.pending)} 条${u.dropped?' · 未发送 '+int(u.dropped)+' 条':''}</span> <button type="button" class="btn" id="refresh-upload">刷新状态</button></div></div>
- <div class="srow"><span></span><button type="button" class="btn primary" id="save-upload">保存上传设置</button></div>`)
+ <div class="srow"><span></span><button type="button" class="btn primary" id="save-upload">保存上传设置</button></div>
+ <div class="srow"><span class="k">其他节点</span><div><span id="extra-status">正在读取…</span><div class="help">附加节点使用同一自动测速组和探针；只有该组实际选中该节点时才上传新延迟。订阅用量默认不绑定。</div></div></div>
+ <div class="srow"><label class="k" for="extra-node">添加节点</label><select id="extra-node"><option value="">选择组内节点</option>${extraOptions}</select></div>
+ <div class="srow"><label class="k" for="extra-alias">公开别名</label><input id="extra-alias" maxlength="55" autocomplete="off"></div>
+ <div class="srow"><span class="k">确认身份</span><label class="check"><input type="checkbox" id="extra-confirm">我已确认该节点身份，并同意公开其别名和测量结果</label></div>
+ <div class="srow"><span></span><button type="button" class="btn" id="save-extra">添加节点</button><div class="help">保存后重启 MeowX Traffic 生效；关闭上传或更换组、探针地址、密钥会暂停附加节点，待发记录保留。</div></div>`)
 }
 function facts(){const H=S.hist,v=f=>H?f(H):'—';return `<div><small>首次采集</small><b>${v(H=>new Date(H.since).toLocaleDateString('zh-CN'))}</b></div><div><small>明细记录</small><b>${v(H=>int(H.rows.length)+' 条')}</b></div><div><small>内核累计增量</small><b>${v(H=>bytes(H.coreUp+H.coreDown))}</b></div><div><small>采集中断 / 重置</small><b>${v(H=>int(H.gaps)+' 次')}</b></div>`}
 function bindSettings(){
@@ -346,6 +353,9 @@ function bindSettings(){
  for(const action of ['start','stop'])$('#guard-'+action)?.addEventListener('click',async()=>{try{await api('api/probe-guard',{action});notify(action==='stop'?'已请求停止后台探针':'已请求启动后台探针');setTimeout(refreshGuard,1000)}catch(e){notify(e.message,'error')}});refreshGuard();
  async function refreshQuota(){try{const q=await api('api/quota-settings');if($('#quota-status'))$('#quota-status').textContent=q.profile?(q.status||'等待采集')+(q.pending?' · 待同步':''):'尚未绑定订阅'}catch{if($('#quota-status'))$('#quota-status').textContent='状态不可用'}}$('#refresh-quota')?.addEventListener('click',refreshQuota);refreshQuota();
  $('#refresh-upload')?.addEventListener('click',async()=>{try{const u=await api('api/upload-settings');$('#upload-status').textContent=(u.status||'尚未上传')+' · 待发送 '+int(u.pending)+' 条'+(u.dropped?' · 未发送 '+int(u.dropped)+' 条':'')}catch(e){notify(e.message,'error')}});
+ async function refreshExtra(){try{const items=await api('api/extra-binding');const el=$('#extra-status');if(el)el.textContent=items.length?items.map(x=>x.groupAlias+' · '+x.groupId+' · '+(x.status||'等待采集')+' · 待发送 '+int(x.pending)+' 条'+(x.quotaBound?'':' · 未绑定用量')).join('；'):'尚未添加'}catch{if($('#extra-status'))$('#extra-status').textContent='状态不可用'}}
+ refreshExtra();
+ $('#save-extra')?.addEventListener('click',async()=>{const alias=$('#extra-alias').value.trim();try{const r=await api('api/extra-binding',{targetNode:$('#extra-node').value,groupAlias:alias,nodeAlias:alias,confirm:$('#extra-confirm').checked});$('#extra-status').textContent='已保存 '+r.groupId+'；重启后生效，订阅用量未绑定';notify('节点已保存，重启后生效')}catch(e){notify(e.message,'error')}});
  $('#save-upload')?.addEventListener('click',async()=>{let selection;try{selection=JSON.parse($('#upload-group').value)}catch{selection=['','','','']}try{S.upload=await api('api/upload-settings',{enabled:$('#upload-enabled').checked,endpoint:$('#upload-endpoint').value,source:selection[0],group:selection[1],targetNode:selection[2],targetUrl:selection[3],confirmNode:$('#upload-confirm-node').checked,groupAlias:$('#upload-group-alias').value,nodeAlias:$('#upload-node-alias').value,token:$('#upload-token').value,clearToken:!!$('#upload-clear-token')?.checked});notify('上传设置已保存');render()}catch(e){notify(e.message,'error')}});
  $('#open-dir').onclick=()=>api('api/open-dir',{}).catch(e=>notify(e.message,'error'));
  let armed=0;$('#clear').onclick=async e=>{const b=e.currentTarget;

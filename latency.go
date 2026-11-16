@@ -21,6 +21,7 @@ type latencyProxy struct {
 	Type    string                `json:"type"`
 	Now     string                `json:"now"`
 	TestURL string                `json:"testUrl"`
+	All     []string              `json:"all"`
 	Extra   map[string]proxyState `json:"extra"`
 }
 type LatencyPoint struct {
@@ -40,10 +41,11 @@ type latencySelection struct {
 }
 
 type LatencyGroup struct {
-	Endpoint string `json:"endpoint"`
-	Group    string `json:"group"`
-	Node     string `json:"node"`
-	TestURL  string `json:"testUrl"`
+	Endpoint string   `json:"endpoint"`
+	Group    string   `json:"group"`
+	Node     string   `json:"node"`
+	TestURL  string   `json:"testUrl"`
+	Members  []string `json:"members,omitempty"`
 }
 
 // ingestLatency records only the latest result of the node selected at observation.
@@ -67,6 +69,11 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 		if m.uploader != nil {
 			for _, p := range added {
 				m.uploader.enqueue(p)
+			}
+		}
+		for _, binding := range m.extraBindings {
+			for _, p := range added {
+				binding.uploader.enqueue(p)
 			}
 		}
 	}()
@@ -105,7 +112,7 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 		if g.Type != "URLTest" {
 			continue
 		}
-		groups = append(groups, LatencyGroup{base, name, g.Now, g.TestURL})
+		groups = append(groups, LatencyGroup{Endpoint: base, Group: name, Node: g.Now, TestURL: g.TestURL, Members: append([]string(nil), g.All...)})
 		selection, ok := m.latencySelections[name]
 		if !ok || selection.node != g.Now || selection.testURL != g.TestURL {
 			selection = latencySelection{g.Now, g.TestURL, now.UTC().Format(time.RFC3339Nano), now}

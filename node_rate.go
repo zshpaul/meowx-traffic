@@ -123,6 +123,20 @@ func (m *Monitor) observeNodeRate(base string, s Snapshot, now time.Time, genera
 	if m.generation != generation {
 		return
 	}
+	for _, binding := range m.extraBindings {
+		extra := binding.store.Get().Upload
+		if !binding.rateStarted.Equal(settings.StartedAt) {
+			binding.rate.unavailable(now, extra.GroupID)
+			binding.rateStarted = settings.StartedAt
+		}
+		if !settings.Enabled || !extra.Enabled || extra.Source != base ||
+			settings.Endpoint != extra.Endpoint || settings.TokenCipher != extra.TokenCipher ||
+			settings.Source != extra.Source || settings.Group != extra.Group || settings.TargetURL != extra.TargetURL {
+			binding.rate.unavailable(now, extra.GroupID)
+		} else {
+			binding.rate.observe(base, extra.TargetNode, extra.GroupID, s.Connections, now)
+		}
+	}
 	if !settings.Enabled || settings.Source != base {
 		m.nodeRate.unavailable(now, settings.GroupID)
 		return
@@ -132,11 +146,17 @@ func (m *Monitor) observeNodeRate(base string, s Snapshot, now time.Time, genera
 
 func (m *Monitor) clearNodeRate(now time.Time) {
 	m.nodeRate.unavailable(now, "")
+	for _, binding := range m.extraBindings {
+		binding.rate.unavailable(now, "")
+	}
 }
 
 func (u *Uploader) sendNodeRate(m *Monitor) {
 	u.sendMu.Lock()
 	defer u.sendMu.Unlock()
+	if !u.allowed() {
+		return
+	}
 	s := u.store.Get().Upload
 	base, err := uploadURL(s.Endpoint)
 	if !s.Enabled || err != nil || s.GroupID == "" || s.TargetNode == "" {
@@ -149,9 +169,21 @@ func (u *Uploader) sendNodeRate(m *Monitor) {
 		return
 	}
 	m.mu.Lock()
-	sample := m.nodeRate.snapshot
+	tracker := &m.nodeRate
+	for _, binding := range m.extraBindings {
+		if binding.uploader == u {
+			tracker = &binding.rate
+			break
+		}
+	}
+	sample := tracker.snapshot
 	observed, parseErr := time.Parse(time.RFC3339Nano, sample.Observed)
-	if !m.connected || m.nodeRate.source != s.Source || m.nodeRate.target != s.TargetNode || sample.GroupID != s.GroupID || parseErr != nil || time.Since(observed) > 10*time.Second || time.Since(observed) < -5*time.Second {
+	beforeEnable := false
+	if u.parent != nil {
+		started := u.parent.Get().Upload.StartedAt
+		beforeEnable = started.IsZero() || observed.Before(started)
+	}
+	if !m.connected || tracker.source != s.Source || tracker.target != s.TargetNode || sample.GroupID != s.GroupID || parseErr != nil || beforeEnable || time.Since(observed) > 10*time.Second || time.Since(observed) < -5*time.Second {
 		sample = nodeRateSnapshot{Version: 1, GroupID: s.GroupID, Observed: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), Status: "unknown"}
 	}
 	m.mu.Unlock()

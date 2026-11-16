@@ -61,12 +61,22 @@ type Uploader struct {
 	mu      sync.Mutex
 	file    string
 	store   *Store
+	parent  *Store
 	queue   uploadDisk
 	status  string
 	next    time.Time
 	backoff time.Duration
 	blocked bool
 	client  *http.Client
+}
+
+func (u *Uploader) allowed() bool {
+	if u.parent == nil {
+		return true
+	}
+	p, s := u.parent.Get().Upload, u.store.Get().Upload
+	return p.Enabled && p.Endpoint == s.Endpoint && p.TokenCipher == s.TokenCipher &&
+		p.Source == s.Source && p.Group == s.Group && p.TargetURL == s.TargetURL
 }
 
 func randomID() (string, error) {
@@ -176,9 +186,22 @@ func (u *Uploader) pruneAckedLocked(now time.Time) error {
 }
 
 func (u *Uploader) enqueue(p LatencyPoint) {
+	if u.parent != nil {
+		u.sendMu.Lock()
+		defer u.sendMu.Unlock()
+	}
+	if !u.allowed() {
+		return
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	s := u.store.Get().Upload
+	if u.parent != nil {
+		pStart := u.parent.Get().Upload.StartedAt
+		if pStart.IsZero() || p.ObservedAt.Before(pStart) || p.Time.Before(pStart) || p.Time.Before(s.StartedAt) {
+			return
+		}
+	}
 	if !s.Enabled || s.Source != p.Endpoint || s.Group != p.Group || s.TargetNode == "" || s.TargetNode != p.Node || s.TargetURL == "" || s.TargetURL != p.TestURL || s.Binding == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || !p.Fresh || p.ObservedAt.IsZero() || p.Delay == nil || s.StartedAt.IsZero() || p.ObservedAt.Before(s.StartedAt) || p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
 		return
 	}
@@ -258,6 +281,9 @@ func (u *Uploader) fail(msg string, retry bool) {
 func (u *Uploader) flush() {
 	u.sendMu.Lock()
 	defer u.sendMu.Unlock()
+	if !u.allowed() {
+		return
+	}
 	s := u.store.Get().Upload
 	if !s.Enabled {
 		return

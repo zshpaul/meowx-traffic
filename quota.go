@@ -108,6 +108,7 @@ type quotaSync struct {
 	mu      sync.Mutex
 	sendMu  *sync.Mutex
 	store   *Store
+	parent  *Store
 	path    string
 	config  string
 	disk    quotaDisk
@@ -148,6 +149,13 @@ func (q *quotaSync) tick() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	s := q.store.Get()
+	if q.parent != nil {
+		p := q.parent.Get().Upload
+		if !p.Enabled || p.Endpoint != s.Upload.Endpoint || p.TokenCipher != s.Upload.TokenCipher ||
+			p.Source != s.Upload.Source || p.Group != s.Upload.Group || p.TargetURL != s.Upload.TargetURL {
+			return
+		}
+	}
 	if q.blocked || !s.Upload.Enabled || s.QuotaProfile == "" || s.QuotaGroupID == "" || s.Upload.GroupID != s.QuotaGroupID {
 		return
 	}

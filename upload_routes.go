@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -66,6 +67,12 @@ func uploadSettingsRoute(m *Monitor, st *Store) http.HandlerFunc {
 			in.NodeAlias = strings.TrimSpace(in.NodeAlias)
 			m.uploader.sendMu.Lock()
 			defer m.uploader.sendMu.Unlock()
+			// Drain all additional uploads before changing the primary switch
+			// or destination, so disabling remains a synchronous stop.
+			for _, binding := range m.extraBindings {
+				binding.uploader.sendMu.Lock()
+				defer binding.uploader.sendMu.Unlock()
+			}
 			old := st.Get().Upload
 			next := UploadSettings{Enabled: in.Enabled, Endpoint: in.Endpoint, Source: in.Source, Group: in.Group, TargetNode: in.TargetNode, TargetURL: in.TargetURL, Binding: old.Binding, GroupAlias: in.GroupAlias, NodeAlias: in.NodeAlias, GroupID: old.GroupID, TokenCipher: old.TokenCipher, StartedAt: old.StartedAt}
 			if !in.Enabled {
@@ -98,6 +105,14 @@ func uploadSettingsRoute(m *Monitor, st *Store) http.HandlerFunc {
 			scopeChanged := next.Source != old.Source || next.Group != old.Group || next.TargetNode != old.TargetNode || next.TargetURL != old.TargetURL || next.GroupAlias != old.GroupAlias || next.NodeAlias != old.NodeAlias
 			destinationChanged := next.Endpoint != old.Endpoint || next.TokenCipher != old.TokenCipher
 			changed := destinationChanged || scopeChanged
+			if changed {
+				for _, binding := range m.extraBindings {
+					if _, err := os.Stat(binding.migrationMarker()); !os.IsNotExist(err) {
+						http.Error(w, "附加节点迁移未完成；请先重试迁移，再更改主上传设置", http.StatusConflict)
+						return
+					}
+				}
+			}
 			if in.PreserveGroup && (!old.Enabled || !next.Enabled || old.GroupID == "" || scopeChanged || !destinationChanged) {
 				http.Error(w, "只能在保持原节点、组和别名时迁移目的地", http.StatusBadRequest)
 				return

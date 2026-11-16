@@ -20,6 +20,92 @@ type extraBinding struct {
 	rateStarted time.Time
 }
 
+// Migration is explicit because pending records will be sent to the new
+// destination. Each durable step can be retried after an interrupted write.
+func migrateExtraBindingRoute(m *Monitor, primary *Store) http.HandlerFunc {
+	return post(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			GroupID string `json:"groupId"`
+			Confirm bool   `json:"confirm"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil || !in.Confirm || in.GroupID == "" || m.uploader == nil {
+			http.Error(w, "invalid migration", http.StatusBadRequest)
+			return
+		}
+		m.uploader.sendMu.Lock()
+		defer m.uploader.sendMu.Unlock()
+		p := primary.Get().Upload
+		m.uploader.mu.Lock()
+		primaryBound := p.Enabled && p.Binding != "" && p.Binding == m.uploader.queue.Binding && m.uploader.matchesDestination(p)
+		m.uploader.mu.Unlock()
+		if !primaryBound {
+			http.Error(w, "primary upload binding unavailable", http.StatusConflict)
+			return
+		}
+		var b *extraBinding
+		for _, candidate := range m.extraBindings {
+			if candidate.store.Get().Upload.GroupID == in.GroupID {
+				b = candidate
+				break
+			}
+		}
+		if b == nil {
+			http.Error(w, "binding not found", http.StatusNotFound)
+			return
+		}
+		b.uploader.sendMu.Lock()
+		defer b.uploader.sendMu.Unlock()
+		s := b.store.Get().Upload
+		if !s.Enabled || s.Source != p.Source || s.Group != p.Group || s.TargetURL != p.TargetURL || s.TargetNode == p.TargetNode {
+			http.Error(w, "binding scope differs from primary", http.StatusConflict)
+			return
+		}
+		u, q := b.uploader, b.quota
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		oldCred, newCred := credentialFingerprint(s.TokenCipher), credentialFingerprint(p.TokenCipher)
+		validDestination := func(destination, credential string) bool {
+			return (destination == s.Endpoint && credential == oldCred) || (destination == p.Endpoint && credential == newCred)
+		}
+		if u.status == "上传队列无法读取，已暂停" || u.queue.Binding != s.Binding ||
+			!validDestination(u.queue.Destination, u.queue.Credential) || q.blocked ||
+			(q.disk.Destination != "" && !validDestination(q.disk.Destination, q.disk.Credential)) {
+			http.Error(w, "binding queue cannot be safely migrated", http.StatusConflict)
+			return
+		}
+		if q.disk.Destination != p.Endpoint || q.disk.Credential != newCred {
+			before := q.disk
+			q.disk.Destination, q.disk.Credential, q.disk.Known = p.Endpoint, newCred, false
+			if q.disk.Latest.Revision > 0 {
+				q.disk.Pending = true
+			}
+			if q.save() != nil {
+				q.disk = before
+				http.Error(w, "cannot save quota migration", http.StatusInternalServerError)
+				return
+			}
+		}
+		before := u.queue
+		u.queue.Destination, u.queue.Credential = p.Endpoint, newCred
+		if u.saveLocked() != nil {
+			u.queue = before
+			http.Error(w, "cannot save queue migration", http.StatusInternalServerError)
+			return
+		}
+		if _, err := b.store.Update(func(v *Settings) {
+			v.Upload.Endpoint, v.Upload.TokenCipher = p.Endpoint, p.TokenCipher
+		}); err != nil {
+			http.Error(w, "cannot save binding migration; retry", http.StatusInternalServerError)
+			return
+		}
+		u.status, u.blocked, u.next, u.backoff = "等待上传", false, time.Time{}, 0
+		q.next, q.backoff = time.Time{}, 0
+		jsonOut(w, map[string]any{"groupId": s.GroupID})
+	})
+}
+
 // Creating a binding persists it for the next application start; it never
 // changes the running primary binding or switches the proxy group.
 func extraBindingRoute(dir string, m *Monitor, primary *Store) http.HandlerFunc {

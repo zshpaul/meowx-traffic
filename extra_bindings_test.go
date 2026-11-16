@@ -325,6 +325,85 @@ func TestExtraQuotaDoesNotSendAfterPrimaryDestinationChange(t *testing.T) {
 	}
 }
 
+func TestExtraMigrationPreservesPendingAndRecoversInterruptedWrite(t *testing.T) {
+	primary, st, point := uploadFixture(t, "http://127.0.0.1:8796")
+	root := t.TempDir()
+	s := st.Get()
+	s.Upload.GroupID, s.Upload.Binding, s.Upload.TargetNode = "second-group", "second-binding", "second-node"
+	s.QuotaProfile, s.QuotaGroupID = "second-profile", s.Upload.GroupID
+	writeExtraSettings(t, root, "second", s)
+	extras := loadExtraBindings(root, "unused", st)
+	if len(extras) != 1 {
+		t.Fatal("missing extra binding")
+	}
+	point.Node = "second-node"
+	extras[0].uploader.enqueue(point)
+	u, q := extras[0].uploader, extras[0].quota
+	if len(u.queue.Samples) != 1 {
+		t.Fatal("missing pending sample")
+	}
+	seed, pending := u.queue.Seed, u.queue.Samples[0].ID
+	q.disk = quotaDisk{Profile: s.QuotaProfile, GroupID: s.QuotaGroupID, Destination: s.Upload.Endpoint,
+		Credential: credentialFingerprint(s.Upload.TokenCipher), Pending: true, Known: true,
+		Latest: quotaSnapshot{Revision: 7}}
+	if err := q.save(); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := encryptToken("rotated-test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Update(func(v *Settings) {
+		v.Upload.Endpoint = "https://new.example"
+		v.Upload.TokenCipher = cipher
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary.queue.Destination = st.Get().Upload.Endpoint
+	primary.queue.Credential = credentialFingerprint(cipher)
+	if err := primary.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	m := &Monitor{uploader: primary, extraBindings: extras}
+	route := migrateExtraBindingRoute(m, st)
+	call := func(body string) int {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		route(w, req)
+		return w.Code
+	}
+	if call(`{"groupId":"second-group"}`) != http.StatusBadRequest {
+		t.Fatal("migration without confirmation succeeded")
+	}
+	// Simulate a crash after the queue write but before settings are updated.
+	u.queue.Destination, u.queue.Credential = st.Get().Upload.Endpoint, credentialFingerprint(cipher)
+	if err := u.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	m.extraBindings = loadExtraBindings(root, "unused", st)
+	if len(m.extraBindings) != 1 {
+		t.Fatal("interrupted binding was not loaded")
+	}
+	if call(`{"groupId":"second-group","confirm":true}`) != http.StatusOK {
+		t.Fatal("could not resume migration")
+	}
+	reloaded := loadExtraBindings(root, "unused", st)
+	if len(reloaded) != 1 {
+		t.Fatal("migrated binding did not reload")
+	}
+	got, quota := reloaded[0].uploader, reloaded[0].quota
+	if got.queue.Seed != seed || len(got.queue.Samples) != 1 || got.queue.Samples[0].ID != pending ||
+		!got.matchesDestination(reloaded[0].store.Get().Upload) || !got.allowed() {
+		t.Fatal("migration lost identity or pending sample")
+	}
+	if !quota.disk.Pending || quota.disk.Known || quota.disk.Latest.Revision != 7 ||
+		quota.disk.Destination != st.Get().Upload.Endpoint {
+		t.Fatal("quota migration did not preserve pending data for reconciliation")
+	}
+}
+
 func TestExtraBindingEndToEndKeepsBWHAndReportsOnlySelectedNode(t *testing.T) {
 	received := make(chan []UploadSample, 2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

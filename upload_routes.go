@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -106,17 +107,7 @@ func uploadSettingsRoute(m *Monitor, st *Store) http.HandlerFunc {
 			changed := destinationChanged || scopeChanged
 			if changed {
 				for _, binding := range m.extraBindings {
-					extra := binding.store.Get().Upload
-					binding.uploader.mu.Lock()
-					queueOK := binding.uploader.status != "上传队列无法读取，已暂停" &&
-						binding.uploader.queue.Binding == extra.Binding && binding.uploader.matchesDestination(extra)
-					binding.uploader.mu.Unlock()
-					binding.quota.mu.Lock()
-					q := binding.quota.disk
-					quotaOK := !binding.quota.blocked && (q.Destination == "" ||
-						(q.Destination == extra.Endpoint && q.Credential == credentialFingerprint(extra.TokenCipher)))
-					binding.quota.mu.Unlock()
-					if !queueOK || !quotaOK {
+					if _, err := os.Stat(binding.migrationMarker()); !os.IsNotExist(err) {
 						http.Error(w, "附加节点迁移未完成；请先重试迁移，再更改主上传设置", http.StatusConflict)
 						return
 					}

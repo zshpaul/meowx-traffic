@@ -20,6 +20,10 @@ type extraBinding struct {
 	rateStarted time.Time
 }
 
+func (b *extraBinding) migrationMarker() string {
+	return filepath.Join(filepath.Dir(b.store.file), "migration-pending")
+}
+
 // Migration is explicit because pending records will be sent to the new
 // destination. Each durable step can be retried after an interrupted write.
 func migrateExtraBindingRoute(m *Monitor, primary *Store) http.HandlerFunc {
@@ -75,6 +79,16 @@ func migrateExtraBindingRoute(m *Monitor, primary *Store) http.HandlerFunc {
 			http.Error(w, "binding queue cannot be safely migrated", http.StatusConflict)
 			return
 		}
+		f, err := os.OpenFile(b.migrationMarker(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err == nil {
+			if err = f.Close(); err != nil {
+				http.Error(w, "cannot save migration marker", http.StatusInternalServerError)
+				return
+			}
+		} else if !os.IsExist(err) {
+			http.Error(w, "cannot save migration marker", http.StatusInternalServerError)
+			return
+		}
 		if q.disk.Destination != p.Endpoint || q.disk.Credential != newCred {
 			before := q.disk
 			q.disk.Destination, q.disk.Credential, q.disk.Known = p.Endpoint, newCred, false
@@ -102,7 +116,40 @@ func migrateExtraBindingRoute(m *Monitor, primary *Store) http.HandlerFunc {
 		}
 		u.status, u.blocked, u.next, u.backoff = "等待上传", false, time.Time{}, 0
 		q.next, q.backoff = time.Time{}, 0
+		if err := os.Remove(b.migrationMarker()); err != nil && !os.IsNotExist(err) {
+			http.Error(w, "migration saved; retry to clear marker", http.StatusInternalServerError)
+			return
+		}
 		jsonOut(w, map[string]any{"groupId": s.GroupID})
+	})
+}
+
+func cancelExtraMigrationRoute(m *Monitor) http.HandlerFunc {
+	return post(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			GroupID string `json:"groupId"`
+			Confirm bool   `json:"confirm"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil || !in.Confirm || in.GroupID == "" || m.uploader == nil {
+			http.Error(w, "invalid cancellation", http.StatusBadRequest)
+			return
+		}
+		m.uploader.sendMu.Lock()
+		defer m.uploader.sendMu.Unlock()
+		for _, b := range m.extraBindings {
+			if b.store.Get().Upload.GroupID != in.GroupID {
+				continue
+			}
+			b.uploader.sendMu.Lock()
+			defer b.uploader.sendMu.Unlock()
+			if err := os.Remove(b.migrationMarker()); err != nil && !os.IsNotExist(err) {
+				http.Error(w, "cannot cancel migration", http.StatusInternalServerError)
+				return
+			}
+			jsonOut(w, map[string]any{"groupId": in.GroupID})
+			return
+		}
+		http.Error(w, "binding not found", http.StatusNotFound)
 	})
 }
 

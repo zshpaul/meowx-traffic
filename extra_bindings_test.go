@@ -386,6 +386,9 @@ func TestExtraMigrationPreservesPendingAndRecoversInterruptedWrite(t *testing.T)
 		t.Fatal("migration without confirmation succeeded")
 	}
 	// Simulate a crash after the queue write but before settings are updated.
+	if err := os.WriteFile(extras[0].migrationMarker(), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
 	u.queue.Destination, u.queue.Credential = st.Get().Upload.Endpoint, credentialFingerprint(cipher)
 	if err := u.saveLocked(); err != nil {
 		t.Fatal(err)
@@ -404,6 +407,21 @@ func TestExtraMigrationPreservesPendingAndRecoversInterruptedWrite(t *testing.T)
 	uploadSettingsRoute(m, st)(w, req)
 	if w.Code != http.StatusConflict || st.Get().Upload.Endpoint != current.Endpoint {
 		t.Fatalf("primary changed during interrupted migration: %d", w.Code)
+	}
+	beforeCancel, err := os.ReadFile(u.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"groupId":"second-group","confirm":true}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancel := httptest.NewRecorder()
+	cancelExtraMigrationRoute(m)(cancel, cancelReq)
+	afterCancel, err := os.ReadFile(u.file)
+	if cancel.Code != http.StatusOK || err != nil || string(beforeCancel) != string(afterCancel) {
+		t.Fatal("cancellation changed the queued data")
+	}
+	if err := os.WriteFile(extras[0].migrationMarker(), nil, 0600); err != nil {
+		t.Fatal(err)
 	}
 	m.extraBindings = loadExtraBindings(root, "unused", st)
 	if len(m.extraBindings) != 1 {
@@ -424,6 +442,39 @@ func TestExtraMigrationPreservesPendingAndRecoversInterruptedWrite(t *testing.T)
 	if !quota.disk.Pending || quota.disk.Known || quota.disk.Latest.Revision != 7 ||
 		quota.disk.Destination != st.Get().Upload.Endpoint {
 		t.Fatal("quota migration did not preserve pending data for reconciliation")
+	}
+	if _, err := os.Stat(reloaded[0].migrationMarker()); !os.IsNotExist(err) {
+		t.Fatal("completed migration marker remains")
+	}
+}
+
+func TestExtraQueueFailureDoesNotTrapPrimarySettings(t *testing.T) {
+	primary, st, point := uploadFixture(t, "http://127.0.0.1:8796")
+	root := t.TempDir()
+	s := st.Get()
+	s.Upload.GroupID, s.Upload.Binding, s.Upload.TargetNode = "second-group", "second-binding", "second-node"
+	writeExtraSettings(t, root, "second", s)
+	extras := loadExtraBindings(root, "unused", st)
+	if len(extras) != 1 {
+		t.Fatal("missing extra")
+	}
+	extras[0].uploader.status = "上传队列无法读取，已暂停"
+	extras[0].quota.blocked = true
+	m := &Monitor{uploader: primary, quota: &quotaSync{}, extraBindings: extras, connected: true}
+	m.latencyGroups = []LatencyGroup{{Endpoint: point.Endpoint, Group: point.Group, Node: point.Node, TestURL: point.TestURL}}
+	current := st.Get().Upload
+	body, err := json.Marshal(uploadInput{Enabled: true, Endpoint: "https://new.example", Source: current.Source,
+		Group: current.Group, TargetNode: current.TargetNode, TargetURL: current.TargetURL, ConfirmNode: true,
+		GroupAlias: current.GroupAlias, NodeAlias: current.NodeAlias})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	uploadSettingsRoute(m, st)(w, req)
+	if w.Code != http.StatusOK || st.Get().Upload.Endpoint != "https://new.example" {
+		t.Fatalf("extra failure trapped primary: %d", w.Code)
 	}
 }
 

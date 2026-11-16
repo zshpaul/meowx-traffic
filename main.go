@@ -537,6 +537,7 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 	mux.HandleFunc(root+"api/upload-settings", uploadSettingsRoute(m, st))
 	mux.HandleFunc(root+"api/extra-binding", extraBindingRoute(dir, m, st))
 	mux.HandleFunc(root+"api/extra-binding-migrate", migrateExtraBindingRoute(m, st))
+	mux.HandleFunc(root+"api/extra-binding-migrate-cancel", cancelExtraMigrationRoute(m))
 	mux.HandleFunc(root+"api/probe-guard", probeGuardRoute(dir))
 	mux.HandleFunc(root+"api/quota-settings", quotaSettingsRoute(m.quota, st))
 	mux.HandleFunc(root+"api/settings", func(w http.ResponseWriter, r *http.Request) {

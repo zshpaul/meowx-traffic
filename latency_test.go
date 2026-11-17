@@ -220,7 +220,10 @@ func TestBoundNodeHistoryUnselectedFailureRecoveryAndRestart(t *testing.T) {
 	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
 	s := st.Get().Upload
 	_, parent, _ := uploadFixture(t, s.Endpoint)
-	if _, err := parent.Update(func(v *Settings) { v.Upload.TargetNode = "other" }); err != nil {
+	if _, err := parent.Update(func(v *Settings) {
+		v.Upload = s
+		v.Upload.TargetNode = "other"
+	}); err != nil {
 		t.Fatal(err)
 	}
 	u.parent = parent

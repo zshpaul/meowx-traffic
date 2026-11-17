@@ -98,6 +98,7 @@ type Monitor struct {
 	latencySelections map[string]latencySelection
 	uploader          *Uploader
 	quota             *quotaSync
+	quotaBindingMu    sync.Mutex
 	nodeRate          nodeRateTracker
 	extraBindings     []*extraBinding
 }
@@ -539,7 +540,7 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 	mux.HandleFunc(root+"api/extra-binding-migrate", migrateExtraBindingRoute(m, st))
 	mux.HandleFunc(root+"api/extra-binding-migrate-cancel", cancelExtraMigrationRoute(m))
 	mux.HandleFunc(root+"api/probe-guard", probeGuardRoute(dir))
-	mux.HandleFunc(root+"api/quota-settings", quotaSettingsRoute(m.quota, st))
+	mux.HandleFunc(root+"api/quota-settings", primaryQuotaSettingsRoute(m, st))
 	mux.HandleFunc(root+"api/extra-quota-settings", extraQuotaSettingsRoute(m))
 	mux.HandleFunc(root+"api/settings", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {

@@ -58,6 +58,7 @@ func TestExtraQuotaBindingIsIndependentAndSendsRawValues(t *testing.T) {
 		t.Fatal("missing extra binding")
 	}
 	m := &Monitor{uploader: primary, extraBindings: extras}
+	m.quota = newQuotaSync(filepath.Dir(st.file), config, st, &primary.sendMu)
 	route := extraQuotaSettingsRoute(m)
 	call := func(group, body string) int {
 		w := httptest.NewRecorder()
@@ -73,6 +74,11 @@ func TestExtraQuotaBindingIsIndependentAndSendsRawValues(t *testing.T) {
 	}
 	if code := call("dmit-group", `{"profile":"dmit-profile","confirm":true}`); code != http.StatusOK {
 		t.Fatalf("bind failed: %d", code)
+	}
+	w := httptest.NewRecorder()
+	primaryQuotaSettingsRoute(m, st)(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"profile":"dmit-profile"}`)))
+	if w.Code != http.StatusConflict {
+		t.Fatal("primary accepted a profile already bound to an additional node")
 	}
 	q := extras[0].quota
 	var sent quotaSnapshot
@@ -106,6 +112,49 @@ func TestExtraQuotaBindingIsIndependentAndSendsRawValues(t *testing.T) {
 	afterQuotaQueue, err := os.ReadFile(primaryQuota.path)
 	if err != nil || string(afterQuotaQueue) != string(primaryQuotaQueue) {
 		t.Fatal("primary pending quota queue changed")
+	}
+}
+
+func TestConcurrentQuotaBindingsAndUnreadableQueue(t *testing.T) {
+	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	root := t.TempDir()
+	config := filepath.Join(root, "config.json")
+	if err := os.WriteFile(config, []byte(`{"profiles":[{"id":"shared","lastUpdateDate":"2026-11-17T00:00:00Z","subscriptionInfo":{"upload":1,"download":2,"total":100}}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := st.Get()
+	s.Upload.GroupID, s.Upload.Binding = "extra-group", "extra-binding"
+	writeExtraSettings(t, root, "extra", s)
+	extras := loadExtraBindings(root, config, st)
+	m := &Monitor{quota: newQuotaSync(filepath.Dir(st.file), config, st, &u.sendMu), extraBindings: extras}
+	results := make(chan int, 2)
+	start := make(chan struct{})
+	for _, handler := range []http.HandlerFunc{primaryQuotaSettingsRoute(m, st), extraQuotaSettingsRoute(m)} {
+		go func(h http.HandlerFunc) {
+			<-start
+			w := httptest.NewRecorder()
+			h(w, httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"shared","confirm":true}`)))
+			results <- w.Code
+		}(handler)
+	}
+	close(start)
+	a, b := <-results, <-results
+	if !((a == http.StatusOK && b == http.StatusConflict) || (b == http.StatusOK && a == http.StatusConflict)) {
+		t.Fatalf("concurrent bindings: %d, %d", a, b)
+	}
+	queue := filepath.Join(root, "bindings", "extra", "quota-queue.json")
+	corrupt := []byte(`{"pending":`)
+	if err := os.WriteFile(queue, corrupt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	extras = loadExtraBindings(root, config, st)
+	m.extraBindings = extras
+	w := httptest.NewRecorder()
+	extraQuotaSettingsRoute(m)(w, httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"shared","confirm":true}`)))
+	extras[0].quota.tick()
+	after, err := os.ReadFile(queue)
+	if w.Code != http.StatusConflict || err != nil || string(after) != string(corrupt) {
+		t.Fatal("unreadable pending queue was not preserved")
 	}
 }
 

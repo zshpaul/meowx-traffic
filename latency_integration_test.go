@@ -103,6 +103,9 @@ func TestSyntheticProbeIntegration(t *testing.T) {
 	bwh := 33
 	bwhHistory = []delayResult{{Time: time.Now().UTC(), Delay: &bwh}}
 	record(120)
+	if len(primary.queue.Samples) != 1 || len(extra.queue.Samples) != 1 {
+		t.Fatal("synthetic BWH and DMIT successes were not independently queued")
+	}
 	primary.flush()
 	extra.flush()
 	if len(extra.queue.Samples) != 0 || len(primary.queue.Samples) != 0 {
@@ -121,12 +124,19 @@ func TestSyntheticProbeIntegration(t *testing.T) {
 	if len(extra.queue.Samples) != 0 {
 		t.Fatal("synthetic failure was not acknowledged after restart")
 	}
+	m.pollLatency() // Establish the new uploader's observation boundary.
 	for i := 0; i < 9; i++ {
 		record(0)
+		if len(extra.queue.Samples) != 1 {
+			t.Fatalf("synthetic failure %d was not queued", i+2)
+		}
 		extra.flush()
 		if len(extra.queue.Samples) != 0 {
 			t.Fatal("synthetic failure was not acknowledged")
 		}
+	}
+	if len(extra.queue.Acked) != 11 {
+		t.Fatalf("expected success and ten distinct acknowledged failures, got %d", len(extra.queue.Acked))
 	}
 	stage("ten-failures")
 	record(160)

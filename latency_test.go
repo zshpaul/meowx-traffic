@@ -215,3 +215,78 @@ func TestLatencyInFlightResultRejectedAfterSameEndpointRebase(t *testing.T) {
 		t.Fatal("old request accepted after settings changed at same endpoint")
 	}
 }
+
+func TestBoundNodeHistoryUnselectedFailureRecoveryAndRestart(t *testing.T) {
+	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	_, parent, _ := uploadFixture(t, s.Endpoint)
+	if _, err := parent.Update(func(v *Settings) { v.Upload.TargetNode = "other" }); err != nil {
+		t.Fatal(err)
+	}
+	u.parent = parent
+	m := mon()
+	m.connected, m.base = true, s.Source
+	m.extraBindings = []*extraBinding{{store: st, uploader: u}}
+	now := time.Now().UTC()
+	success, failed, recovered := 40, 0, 55
+	proxies := map[string]latencyProxy{
+		s.Group:      {Type: "URLTest", Now: "other", TestURL: s.TargetURL, All: []string{"other", s.TargetNode}},
+		"other":      {Type: "Vmess"},
+		s.TargetNode: {Type: "Vmess", Extra: map[string]proxyState{s.TargetURL: {History: []delayResult{{Time: now.Add(-time.Second), Delay: &success}}}}},
+	}
+	m.ingestLatency(m.base, proxies, nil, now)
+	if len(u.queue.Samples) != 0 {
+		t.Fatal("pre-observation history uploaded")
+	}
+	node := proxies[s.TargetNode]
+	node.Extra[s.TargetURL] = proxyState{History: []delayResult{
+		{Time: now.Add(time.Second), Delay: &success},
+		{Time: now.Add(2 * time.Second), Delay: &failed},
+		{Time: now.Add(3 * time.Second), Delay: &recovered},
+	}}
+	proxies[s.TargetNode] = node
+	m.ingestLatency(m.base, proxies, nil, now.Add(4*time.Second))
+	m.ingestLatency(m.base, proxies, nil, now.Add(5*time.Second))
+	if len(u.queue.Samples) != 3 || u.queue.Samples[0].Status != "ok" ||
+		u.queue.Samples[1].Status != "failed" || u.queue.Samples[1].DelayMS != nil ||
+		u.queue.Samples[2].Status != "ok" {
+		t.Fatalf("incorrect success/failure/recovery samples: %+v", u.queue.Samples)
+	}
+	restarted := newUploader(u.file, st)
+	restarted.parent = parent
+	m.extraBindings[0].uploader = restarted
+	m.boundLatency = nil
+	m.ingestLatency(m.base, proxies, nil, now.Add(6*time.Second))
+	if len(restarted.queue.Samples) != 3 {
+		t.Fatal("restart duplicated old history")
+	}
+}
+
+func TestBoundNodeRejectsAmbiguousIdentityAndWrongURL(t *testing.T) {
+	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	m := mon()
+	m.connected, m.base, m.uploader = true, s.Source, u
+	now := time.Now().UTC()
+	value := 0
+	proxies := map[string]latencyProxy{
+		s.Group: {Type: "URLTest", Now: "other", TestURL: s.TargetURL, All: []string{"other", s.TargetNode}},
+		s.TargetNode: {Type: "Vmess", Extra: map[string]proxyState{"wrong-url": {
+			History: []delayResult{{Time: now.Add(time.Second), Delay: &value}},
+		}}},
+	}
+	m.ingestLatency(m.base, proxies, nil, now)
+	n := proxies[s.TargetNode]
+	n.Extra[s.TargetURL] = proxyState{History: []delayResult{{Time: now.Add(time.Second), Delay: &value}}}
+	proxies[s.TargetNode] = n
+	providers := map[string]struct {
+		Proxies []latencyProxy `json:"proxies"`
+	}{"conflict": {Proxies: []latencyProxy{{Name: s.TargetNode, Type: "Vmess"}}}}
+	m.ingestLatency(m.base, proxies, providers, now.Add(2*time.Second))
+	n.Type = "URLTest"
+	proxies[s.TargetNode] = n
+	m.ingestLatency(m.base, proxies, nil, now.Add(3*time.Second))
+	if len(u.queue.Samples) != 0 {
+		t.Fatal("wrong URL, ambiguous node or group history uploaded")
+	}
+}

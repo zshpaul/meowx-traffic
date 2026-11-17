@@ -96,6 +96,7 @@ type Monitor struct {
 	generation        uint64
 	latencySegment    string
 	latencySelections map[string]latencySelection
+	boundLatency      map[*Uploader]boundLatencySelection
 	uploader          *Uploader
 	quota             *quotaSync
 	quotaBindingMu    sync.Mutex
@@ -384,6 +385,7 @@ func (m *Monitor) poll() {
 	m.clearNodeRate(time.Now())
 	m.latencySegment = ""
 	m.latencySelections = nil
+	m.boundLatency = nil
 	m.base = base
 	m.version = ""
 	m.polls = 0
@@ -405,6 +407,7 @@ func (m *Monitor) rebase() {
 	m.latencyGroups = nil
 	m.latencySegment = ""
 	m.latencySelections = nil
+	m.boundLatency = nil
 	m.counted = nil
 	m.version = ""
 	m.polls = 0

@@ -246,9 +246,26 @@ func (u *Uploader) retryBound(m *Monitor) {
 	s := u.store.Get().Upload
 	m.mu.Lock()
 	points := append([]LatencyPoint(nil), m.disk.BoundLatency[s.Binding]...)
+	if !s.Enabled || !u.allowed() {
+		delete(m.disk.BoundLatency, s.Binding)
+		m.mu.Unlock()
+		return
+	}
 	m.mu.Unlock()
 	done := map[string]bool{}
+	parentStart := time.Time{}
+	if u.parent != nil {
+		parentStart = u.parent.Get().Upload.StartedAt
+	}
 	for _, p := range points {
+		if p.Endpoint != s.Source || p.Group != s.Group || p.Node != s.TargetNode || p.TestURL != s.TargetURL ||
+			s.StartedAt.IsZero() || p.Time.Before(s.StartedAt) || p.ObservedAt.Before(s.StartedAt) ||
+			(u.parent != nil && (parentStart.IsZero() || p.Time.Before(parentStart) || p.ObservedAt.Before(parentStart))) ||
+			p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
+			id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
+			done[id] = true
+			continue
+		}
 		u.enqueue(p)
 		u.mu.Lock()
 		id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))

@@ -122,6 +122,11 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 	for _, u := range uploaders {
 		s := u.store.Get().Upload
 		bound = append(bound, u)
+		if !u.allowed() || !s.Enabled {
+			delete(m.disk.BoundLatency, s.Binding)
+			delete(m.boundLatency, u)
+			continue
+		}
 		g, ok := proxies[s.Group]
 		member := false
 		for _, name := range g.All {

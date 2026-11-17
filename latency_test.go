@@ -375,6 +375,7 @@ func TestBoundRetryHonorsParentDisableAndRestart(t *testing.T) {
 	m.connected, m.base = true, s.Source
 	m.extraBindings = []*extraBinding{{store: st, uploader: u}}
 	m.disk.BoundLatency = map[string][]LatencyPoint{s.Binding: {p}}
+	u.queue.Samples = make([]UploadSample, uploadQueueLimit)
 	if _, err := parent.Update(func(v *Settings) { v.Upload.Enabled = false }); err != nil {
 		t.Fatal(err)
 	}
@@ -386,8 +387,8 @@ func TestBoundRetryHonorsParentDisableAndRestart(t *testing.T) {
 		}}},
 	}
 	m.ingestLatency(m.base, proxies, nil, now)
-	if len(m.disk.BoundLatency) != 0 || len(u.queue.Samples) != 0 {
-		t.Fatal("disabled parent retained or collected samples")
+	if len(m.disk.BoundLatency[s.Binding]) != 1 || len(u.queue.Samples) != uploadQueueLimit {
+		t.Fatal("disabled parent lost pending sample or collected a new sample")
 	}
 	if _, err := parent.Update(func(v *Settings) {
 		v.Upload.Enabled = true
@@ -395,17 +396,45 @@ func TestBoundRetryHonorsParentDisableAndRestart(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m.disk.BoundLatency[s.Binding] = []LatencyPoint{p}
+	u.queue.Samples = nil
 	u.retryBound(m)
-	if len(m.disk.BoundLatency) != 0 || len(u.queue.Samples) != 0 {
-		t.Fatal("pre-restart sample was retained or queued")
+	if len(m.disk.BoundLatency) != 0 || len(u.queue.Samples) != 1 {
+		t.Fatal("previously authorized sample was not queued after re-enable")
 	}
 	m.ingestLatency(m.base, proxies, nil, now.Add(time.Second))
 	n := proxies[s.TargetNode]
 	n.Extra[s.TargetURL] = proxyState{History: []delayResult{{Time: now.Add(2 * time.Second), Delay: p.Delay}}}
 	proxies[s.TargetNode] = n
 	m.ingestLatency(m.base, proxies, nil, now.Add(3*time.Second))
-	if len(u.queue.Samples) != 1 {
+	if len(u.queue.Samples) != 2 {
 		t.Fatal("fresh sample after re-enable was not queued")
+	}
+}
+
+func TestBoundRetryWaitsForDestinationMigration(t *testing.T) {
+	u, st, p := uploadFixture(t, "http://127.0.0.1:8796")
+	_, parent, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	if _, err := parent.Update(func(v *Settings) { v.Upload = s }); err != nil {
+		t.Fatal(err)
+	}
+	u.parent = parent
+	m := mon()
+	m.disk.BoundLatency = map[string][]LatencyPoint{s.Binding: {p}}
+	newEndpoint := "http://127.0.0.1:8797"
+	if _, err := parent.Update(func(v *Settings) { v.Upload.Endpoint = newEndpoint }); err != nil {
+		t.Fatal(err)
+	}
+	u.retryBound(m)
+	if len(m.disk.BoundLatency[s.Binding]) != 1 || len(u.queue.Samples) != 0 {
+		t.Fatal("pending sample lost or sent before migration")
+	}
+	if _, err := st.Update(func(v *Settings) { v.Upload.Endpoint = newEndpoint }); err != nil {
+		t.Fatal(err)
+	}
+	u.queue.Destination = newEndpoint
+	u.retryBound(m)
+	if len(m.disk.BoundLatency) != 0 || len(u.queue.Samples) != 1 {
+		t.Fatal("pending sample not queued after migration")
 	}
 }

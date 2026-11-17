@@ -186,6 +186,11 @@ func (u *Uploader) pruneAckedLocked(now time.Time) error {
 }
 
 func (u *Uploader) enqueue(p LatencyPoint) {
+	u.enqueueBound(p, false)
+}
+
+// captured indicates an observation recorded while this binding was authorized.
+func (u *Uploader) enqueueBound(p LatencyPoint, captured bool) {
 	if u.parent != nil {
 		u.sendMu.Lock()
 		defer u.sendMu.Unlock()
@@ -196,7 +201,7 @@ func (u *Uploader) enqueue(p LatencyPoint) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	s := u.store.Get().Upload
-	if u.parent != nil {
+	if u.parent != nil && !captured {
 		pStart := u.parent.Get().Upload.StartedAt
 		if pStart.IsZero() || p.ObservedAt.Before(pStart) || p.Time.Before(pStart) || p.Time.Before(s.StartedAt) {
 			return
@@ -247,26 +252,20 @@ func (u *Uploader) retryBound(m *Monitor) {
 	m.mu.Lock()
 	points := append([]LatencyPoint(nil), m.disk.BoundLatency[s.Binding]...)
 	if !s.Enabled || !u.allowed() {
-		delete(m.disk.BoundLatency, s.Binding)
 		m.mu.Unlock()
 		return
 	}
 	m.mu.Unlock()
 	done := map[string]bool{}
-	parentStart := time.Time{}
-	if u.parent != nil {
-		parentStart = u.parent.Get().Upload.StartedAt
-	}
 	for _, p := range points {
 		if p.Endpoint != s.Source || p.Group != s.Group || p.Node != s.TargetNode || p.TestURL != s.TargetURL ||
 			s.StartedAt.IsZero() || p.Time.Before(s.StartedAt) || p.ObservedAt.Before(s.StartedAt) ||
-			(u.parent != nil && (parentStart.IsZero() || p.Time.Before(parentStart) || p.ObservedAt.Before(parentStart))) ||
 			p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
 			id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
 			done[id] = true
 			continue
 		}
-		u.enqueue(p)
+		u.enqueueBound(p, true)
 		u.mu.Lock()
 		id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
 		_, ok := u.queue.Acked[id]

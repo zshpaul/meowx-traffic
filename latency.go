@@ -123,7 +123,6 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 		s := u.store.Get().Upload
 		bound = append(bound, u)
 		if !u.allowed() || !s.Enabled {
-			delete(m.disk.BoundLatency, s.Binding)
 			delete(m.boundLatency, u)
 			continue
 		}
@@ -177,6 +176,12 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 			if h.Time.IsZero() || h.Time.Before(selection.since) || h.Time.Before(s.StartedAt) ||
 				h.Time.After(now.Add(time.Minute)) || h.Delay == nil || *h.Delay < 0 {
 				continue
+			}
+			if u.parent != nil {
+				start := u.parent.Get().Upload.StartedAt
+				if start.IsZero() || h.Time.Before(start) || now.Before(start) {
+					continue
+				}
 			}
 			point := LatencyPoint{base, s.Group, s.TargetNode, s.TargetURL, h.Time, h.Delay, selection.segment, true, now}
 			key := boundKey(s.Binding, point)

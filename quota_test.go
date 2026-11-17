@@ -121,7 +121,7 @@ func TestConcurrentQuotaBindingsAndUnreadableQueue(t *testing.T) {
 	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
 	root := t.TempDir()
 	config := filepath.Join(root, "config.json")
-	if err := os.WriteFile(config, []byte(`{"profiles":[{"id":"shared","lastUpdateDate":"2026-11-17T00:00:00Z","subscriptionInfo":{"upload":1,"download":2,"total":100}}]}`), 0600); err != nil {
+	if err := os.WriteFile(config, []byte(`{"profiles":[{"id":"shared","lastUpdateDate":"2026-11-17T00:00:00Z","subscriptionInfo":{"upload":1,"download":2,"total":100}},{"id":"distinct","lastUpdateDate":"2026-11-17T00:00:00Z","subscriptionInfo":{"upload":3,"download":4,"total":100}}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	s := st.Get()
@@ -154,13 +154,21 @@ func TestConcurrentQuotaBindingsAndUnreadableQueue(t *testing.T) {
 	extras = loadExtraBindings(root, config, st)
 	m.extraBindings = extras
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"shared","confirm":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"distinct","confirm":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	extraQuotaSettingsRoute(m)(w, req)
 	extras[0].quota.tick()
 	after, err := os.ReadFile(queue)
 	if w.Code != http.StatusConflict || err != nil || string(after) != string(corrupt) {
 		t.Fatal("unreadable pending queue was not preserved")
+	}
+	restarted := loadExtraBindings(root, config, st)
+	if len(restarted) != 1 || !restarted[0].quota.loadError {
+		t.Fatal("unreadable queue protection did not survive restart")
+	}
+	afterRestart, err := os.ReadFile(queue)
+	if err != nil || string(afterRestart) != string(corrupt) {
+		t.Fatal("unreadable queue changed after restart")
 	}
 }
 

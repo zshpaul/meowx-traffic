@@ -186,6 +186,11 @@ func (u *Uploader) pruneAckedLocked(now time.Time) error {
 }
 
 func (u *Uploader) enqueue(p LatencyPoint) {
+	u.enqueueBound(p, false)
+}
+
+// captured indicates an observation recorded while this binding was authorized.
+func (u *Uploader) enqueueBound(p LatencyPoint, captured bool) {
 	if u.parent != nil {
 		u.sendMu.Lock()
 		defer u.sendMu.Unlock()
@@ -196,13 +201,13 @@ func (u *Uploader) enqueue(p LatencyPoint) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	s := u.store.Get().Upload
-	if u.parent != nil {
+	if u.parent != nil && !captured {
 		pStart := u.parent.Get().Upload.StartedAt
 		if pStart.IsZero() || p.ObservedAt.Before(pStart) || p.Time.Before(pStart) || p.Time.Before(s.StartedAt) {
 			return
 		}
 	}
-	if !s.Enabled || s.Source != p.Endpoint || s.Group != p.Group || s.TargetNode == "" || s.TargetNode != p.Node || s.TargetURL == "" || s.TargetURL != p.TestURL || s.Binding == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || !p.Fresh || p.ObservedAt.IsZero() || p.Delay == nil || s.StartedAt.IsZero() || p.ObservedAt.Before(s.StartedAt) || p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
+	if !s.Enabled || s.Source != p.Endpoint || s.Group != p.Group || s.TargetNode == "" || s.TargetNode != p.Node || s.TargetURL == "" || s.TargetURL != p.TestURL || s.Binding == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || !p.Fresh || p.ObservedAt.IsZero() || p.Delay == nil || s.StartedAt.IsZero() || (!captured && (p.ObservedAt.Before(s.StartedAt) || p.Time.Before(s.StartedAt))) || p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
 		return
 	}
 	if u.status == "上传队列无法读取，已暂停" {
@@ -242,6 +247,55 @@ func (u *Uploader) snapshot() (int, int, string) {
 	defer u.mu.Unlock()
 	return len(u.queue.Samples), u.queue.Dropped, u.status
 }
+func (u *Uploader) retryBound(m *Monitor) {
+	s := u.store.Get().Upload
+	m.mu.Lock()
+	points := append([]LatencyPoint(nil), m.disk.BoundLatency[s.Binding]...)
+	if !s.Enabled || !u.allowed() {
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Unlock()
+	done := map[string]bool{}
+	for _, p := range points {
+		if p.Endpoint != s.Source || p.Group != s.Group || p.Node != s.TargetNode || p.TestURL != s.TargetURL ||
+			s.StartedAt.IsZero() ||
+			p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
+			id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
+			done[id] = true
+			continue
+		}
+		u.enqueueBound(p, true)
+		u.mu.Lock()
+		id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
+		_, ok := u.queue.Acked[id]
+		for _, queued := range u.queue.Samples {
+			ok = ok || queued.ID == id
+		}
+		u.mu.Unlock()
+		if ok {
+			done[id] = true
+		}
+	}
+	if len(done) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.disk.BoundLatency[s.Binding][:0]
+	for _, p := range m.disk.BoundLatency[s.Binding] {
+		id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
+		if !done[id] {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		delete(m.disk.BoundLatency, s.Binding)
+	} else {
+		m.disk.BoundLatency[s.Binding] = kept
+	}
+}
+
 func (u *Uploader) run(stop <-chan struct{}, m *Monitor) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
@@ -250,12 +304,7 @@ func (u *Uploader) run(stop <-chan struct{}, m *Monitor) {
 		case <-stop:
 			return
 		case <-t.C:
-			m.mu.Lock()
-			points := append([]LatencyPoint(nil), m.disk.Latency...)
-			m.mu.Unlock()
-			for _, p := range points {
-				u.enqueue(p)
-			}
+			u.retryBound(m)
 			u.flush()
 		}
 	}

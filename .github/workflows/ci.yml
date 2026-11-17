@@ -18,8 +18,14 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./...
+      - run: New-Item -ItemType Directory -Force dist
+      - run: go test -tags integration -c -o dist/traffic-synthetic-integration.test.exe .
       - run: go build -ldflags '-H windowsgui' -o 'dist/MeowX Traffic.exe' .
       - uses: actions/upload-artifact@v4
         with:
           name: meowx-traffic-windows-x64
           path: dist/MeowX Traffic.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: traffic-synthetic-integration
+          path: dist/traffic-synthetic-integration.test.exe

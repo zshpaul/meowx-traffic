@@ -215,3 +215,252 @@ func TestLatencyInFlightResultRejectedAfterSameEndpointRebase(t *testing.T) {
 		t.Fatal("old request accepted after settings changed at same endpoint")
 	}
 }
+
+func TestBoundNodeHistoryUnselectedFailureRecoveryAndRestart(t *testing.T) {
+	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	_, parent, _ := uploadFixture(t, s.Endpoint)
+	if _, err := parent.Update(func(v *Settings) {
+		v.Upload = s
+		v.Upload.TargetNode = "other"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	u.parent = parent
+	m := mon()
+	m.connected, m.base = true, s.Source
+	m.extraBindings = []*extraBinding{{store: st, uploader: u}}
+	now := time.Now().UTC()
+	success, failed, recovered := 40, 0, 55
+	proxies := map[string]latencyProxy{
+		s.Group:      {Type: "URLTest", Now: "other", TestURL: s.TargetURL, All: []string{"other", s.TargetNode}},
+		"other":      {Type: "Vmess"},
+		s.TargetNode: {Type: "Vmess", Extra: map[string]proxyState{s.TargetURL: {History: []delayResult{{Time: now.Add(-time.Second), Delay: &success}}}}},
+	}
+	m.ingestLatency(m.base, proxies, nil, now)
+	if len(u.queue.Samples) != 0 {
+		t.Fatal("pre-observation history uploaded")
+	}
+	node := proxies[s.TargetNode]
+	node.Extra[s.TargetURL] = proxyState{History: []delayResult{
+		{Time: now.Add(time.Second), Delay: &success},
+		{Time: now.Add(2 * time.Second), Delay: &failed},
+		{Time: now.Add(3 * time.Second), Delay: &recovered},
+	}}
+	proxies[s.TargetNode] = node
+	m.ingestLatency(m.base, proxies, nil, now.Add(4*time.Second))
+	m.ingestLatency(m.base, proxies, nil, now.Add(5*time.Second))
+	if len(u.queue.Samples) != 3 || u.queue.Samples[0].Status != "ok" ||
+		u.queue.Samples[1].Status != "failed" || u.queue.Samples[1].DelayMS != nil ||
+		u.queue.Samples[2].Status != "ok" {
+		t.Fatalf("incorrect success/failure/recovery samples: %+v", u.queue.Samples)
+	}
+	restarted := newUploader(u.file, st)
+	restarted.parent = parent
+	m.extraBindings[0].uploader = restarted
+	m.boundLatency = nil
+	m.ingestLatency(m.base, proxies, nil, now.Add(6*time.Second))
+	if len(restarted.queue.Samples) != 3 {
+		t.Fatal("restart duplicated old history")
+	}
+}
+
+func TestBoundNodeRejectsAmbiguousIdentityAndWrongURL(t *testing.T) {
+	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	m := mon()
+	m.connected, m.base, m.uploader = true, s.Source, u
+	now := time.Now().UTC()
+	value := 0
+	proxies := map[string]latencyProxy{
+		s.Group: {Type: "URLTest", Now: "other", TestURL: s.TargetURL, All: []string{"other", s.TargetNode}},
+		s.TargetNode: {Type: "Vmess", Extra: map[string]proxyState{"wrong-url": {
+			History: []delayResult{{Time: now.Add(time.Second), Delay: &value}},
+		}}},
+	}
+	m.ingestLatency(m.base, proxies, nil, now)
+	n := proxies[s.TargetNode]
+	n.Extra[s.TargetURL] = proxyState{History: []delayResult{{Time: now.Add(time.Second), Delay: &value}}}
+	proxies[s.TargetNode] = n
+	providers := map[string]struct {
+		Proxies []latencyProxy `json:"proxies"`
+	}{"conflict": {Proxies: []latencyProxy{{Name: s.TargetNode, Type: "Vmess"}}}}
+	m.ingestLatency(m.base, proxies, providers, now.Add(2*time.Second))
+	n.Type = "URLTest"
+	proxies[s.TargetNode] = n
+	g := proxies[s.Group]
+	g.Now = s.TargetNode
+	proxies[s.Group] = g
+	m.ingestLatency(m.base, proxies, nil, now.Add(3*time.Second))
+	if len(u.queue.Samples) != 0 {
+		t.Fatal("wrong URL, ambiguous node or group history uploaded")
+	}
+}
+
+func TestBoundHistoryRetriesAfterQueueFullAndRestart(t *testing.T) {
+	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	m := mon()
+	m.connected, m.base, m.uploader = true, s.Source, u
+	m.file = filepath.Join(t.TempDir(), "history.json")
+	now := time.Now().UTC()
+	failed := 0
+	proxies := map[string]latencyProxy{
+		s.Group: {Type: "URLTest", Now: "other", TestURL: s.TargetURL, All: []string{s.TargetNode}},
+		s.TargetNode: {Type: "Vmess", Extra: map[string]proxyState{s.TargetURL: {}}},
+	}
+	m.ingestLatency(m.base, proxies, nil, now)
+	u.queue.Samples = make([]UploadSample, uploadQueueLimit)
+	n := proxies[s.TargetNode]
+	n.Extra[s.TargetURL] = proxyState{History: []delayResult{{Time: now.Add(time.Second), Delay: &failed}}}
+	proxies[s.TargetNode] = n
+	m.ingestLatency(m.base, proxies, nil, now.Add(2*time.Second))
+	if len(m.disk.BoundLatency[s.Binding]) != 1 || len(u.queue.Samples) != uploadQueueLimit {
+		t.Fatal("full queue did not retain observation for retry")
+	}
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+	// The controller has rolled over, and the queue has since drained.
+	u.queue.Samples = nil
+	restored := mon()
+	restored.file = m.file
+	if err := restored.load(); err != nil {
+		t.Fatal(err)
+	}
+	u.retryBound(restored)
+	if len(u.queue.Samples) != 1 || u.queue.Samples[0].Status != "failed" {
+		t.Fatal("persisted bound failure was not retried")
+	}
+	u.retryBound(restored)
+	if len(u.queue.Samples) != 1 {
+		t.Fatal("retry duplicated the sample")
+	}
+}
+
+func TestBoundRetryPartitionsBindingsAndRemovesAcknowledged(t *testing.T) {
+	u, st, p := uploadFixture(t, "http://127.0.0.1:8796")
+	other, otherStore, otherPoint := uploadFixture(t, "http://127.0.0.1:8796")
+	if _, err := otherStore.Update(func(v *Settings) { v.Upload.Binding = "other-binding" }); err != nil {
+		t.Fatal(err)
+	}
+	other.queue.Binding = "other-binding"
+	m := mon()
+	m.disk.BoundLatency = map[string][]LatencyPoint{
+		st.Get().Upload.Binding: {p},
+		"other-binding":         {otherPoint},
+	}
+	s := st.Get().Upload
+	id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
+	u.queue.Acked[id] = p.Time
+	u.retryBound(m)
+	if len(m.disk.BoundLatency[s.Binding]) != 0 || len(m.disk.BoundLatency["other-binding"]) != 1 {
+		t.Fatal("acknowledged item retained or other binding modified")
+	}
+	other.retryBound(m)
+	if len(m.disk.BoundLatency) != 0 || len(other.queue.Samples) != 1 {
+		t.Fatal("other binding did not queue independently")
+	}
+}
+
+func TestBoundRetryHonorsParentDisableAndRestart(t *testing.T) {
+	u, st, p := uploadFixture(t, "http://127.0.0.1:8796")
+	_, parent, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	if _, err := parent.Update(func(v *Settings) { v.Upload = s }); err != nil {
+		t.Fatal(err)
+	}
+	u.parent = parent
+	m := mon()
+	m.connected, m.base = true, s.Source
+	m.extraBindings = []*extraBinding{{store: st, uploader: u}}
+	m.disk.BoundLatency = map[string][]LatencyPoint{s.Binding: {p}}
+	u.queue.Samples = make([]UploadSample, uploadQueueLimit)
+	if _, err := parent.Update(func(v *Settings) { v.Upload.Enabled = false }); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	proxies := map[string]latencyProxy{
+		s.Group: {Type: "URLTest", TestURL: s.TargetURL, All: []string{s.TargetNode}},
+		s.TargetNode: {Type: "Vmess", Extra: map[string]proxyState{s.TargetURL: {
+			History: []delayResult{{Time: now, Delay: p.Delay}},
+		}}},
+	}
+	m.ingestLatency(m.base, proxies, nil, now)
+	if len(m.disk.BoundLatency[s.Binding]) != 1 || len(u.queue.Samples) != uploadQueueLimit {
+		t.Fatal("disabled parent lost pending sample or collected a new sample")
+	}
+	if _, err := parent.Update(func(v *Settings) {
+		v.Upload.Enabled = true
+		v.Upload.StartedAt = now
+	}); err != nil {
+		t.Fatal(err)
+	}
+	u.queue.Samples = nil
+	u.retryBound(m)
+	if len(m.disk.BoundLatency) != 0 || len(u.queue.Samples) != 1 {
+		t.Fatal("previously authorized sample was not queued after re-enable")
+	}
+	m.ingestLatency(m.base, proxies, nil, now.Add(time.Second))
+	n := proxies[s.TargetNode]
+	n.Extra[s.TargetURL] = proxyState{History: []delayResult{{Time: now.Add(2 * time.Second), Delay: p.Delay}}}
+	proxies[s.TargetNode] = n
+	m.ingestLatency(m.base, proxies, nil, now.Add(3*time.Second))
+	if len(u.queue.Samples) != 2 {
+		t.Fatal("fresh sample after re-enable was not queued")
+	}
+}
+
+func TestBoundRetryWaitsForDestinationMigration(t *testing.T) {
+	u, st, p := uploadFixture(t, "http://127.0.0.1:8796")
+	_, parent, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	if _, err := parent.Update(func(v *Settings) { v.Upload = s }); err != nil {
+		t.Fatal(err)
+	}
+	u.parent = parent
+	m := mon()
+	m.disk.BoundLatency = map[string][]LatencyPoint{s.Binding: {p}}
+	newEndpoint := "http://127.0.0.1:8797"
+	if _, err := parent.Update(func(v *Settings) { v.Upload.Endpoint = newEndpoint }); err != nil {
+		t.Fatal(err)
+	}
+	u.retryBound(m)
+	if len(m.disk.BoundLatency[s.Binding]) != 1 || len(u.queue.Samples) != 0 {
+		t.Fatal("pending sample lost or sent before migration")
+	}
+	if _, err := st.Update(func(v *Settings) { v.Upload.Endpoint = newEndpoint }); err != nil {
+		t.Fatal(err)
+	}
+	u.queue.Destination = newEndpoint
+	u.retryBound(m)
+	if len(m.disk.BoundLatency) != 0 || len(u.queue.Samples) != 1 {
+		t.Fatal("pending sample not queued after migration")
+	}
+}
+
+func TestPrimaryBoundRetrySurvivesDisableAndEnable(t *testing.T) {
+	u, st, p := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	m := mon()
+	m.disk.BoundLatency = map[string][]LatencyPoint{s.Binding: {p}}
+	u.queue.Samples = make([]UploadSample, uploadQueueLimit)
+	if _, err := st.Update(func(v *Settings) { v.Upload.Enabled = false }); err != nil {
+		t.Fatal(err)
+	}
+	u.retryBound(m)
+	if len(m.disk.BoundLatency[s.Binding]) != 1 {
+		t.Fatal("disabled primary discarded pending point")
+	}
+	if _, err := st.Update(func(v *Settings) {
+		v.Upload.Enabled = true
+		v.Upload.StartedAt = time.Now().UTC()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	u.queue.Samples = nil
+	u.retryBound(m)
+	if len(m.disk.BoundLatency) != 0 || len(u.queue.Samples) != 1 {
+		t.Fatal("primary did not retry previously authorized point")
+	}
+}

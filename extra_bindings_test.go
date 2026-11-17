@@ -523,15 +523,16 @@ func TestExtraBindingEndToEndKeepsBWHAndReportsOnlySelectedNode(t *testing.T) {
 	now := time.Now().UTC().Add(time.Second)
 	value := 42
 	proxies := map[string]latencyProxy{
-		point.Group: {Type: "URLTest", Now: point.Node, TestURL: point.TestURL},
-		point.Node:  {Extra: map[string]proxyState{point.TestURL: {History: []delayResult{{Time: now, Delay: &value}}}}},
+		point.Group: {Type: "URLTest", Now: point.Node, TestURL: point.TestURL, All: []string{point.Node, "second-node"}},
+		point.Node:  {Type: "Vmess", Extra: map[string]proxyState{point.TestURL: {History: []delayResult{{Time: now, Delay: &value}}}}},
+		"second-node": {Type: "Vmess", Extra: map[string]proxyState{point.TestURL: {}}},
 	}
 	m.ingestLatency(point.Endpoint, proxies, nil, now)
 	if len(m.extraBindings[0].uploader.queue.Samples) != 0 {
 		t.Fatal("BWH measurement was attributed to second node")
 	}
-	proxies[point.Group] = latencyProxy{Type: "URLTest", Now: "second-node", TestURL: point.TestURL}
-	proxies["second-node"] = latencyProxy{Extra: map[string]proxyState{point.TestURL: {History: []delayResult{{Time: now.Add(time.Second), Delay: &value}}}}}
+	proxies[point.Group] = latencyProxy{Type: "URLTest", Now: "second-node", TestURL: point.TestURL, All: []string{point.Node, "second-node"}}
+	proxies["second-node"] = latencyProxy{Type: "Vmess", Extra: map[string]proxyState{point.TestURL: {History: []delayResult{{Time: now.Add(time.Second), Delay: &value}}}}}
 	m.ingestLatency(point.Endpoint, proxies, nil, now.Add(time.Second))
 	m.extraBindings[0].uploader.flush()
 	select {

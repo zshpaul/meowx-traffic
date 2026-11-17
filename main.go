@@ -71,6 +71,7 @@ type Disk struct {
 	CoreDown int64
 	Gaps     int
 	Latency  []LatencyPoint `json:"latency,omitempty"`
+	BoundLatency map[string][]LatencyPoint `json:"boundLatency,omitempty"`
 }
 type Monitor struct {
 	mu                sync.Mutex
@@ -96,6 +97,7 @@ type Monitor struct {
 	generation        uint64
 	latencySegment    string
 	latencySelections map[string]latencySelection
+	boundLatency      map[*Uploader]boundLatencySelection
 	uploader          *Uploader
 	quota             *quotaSync
 	quotaBindingMu    sync.Mutex
@@ -244,6 +246,19 @@ func (m *Monitor) prune(now time.Time) {
 		}
 	}
 	m.disk.Latency = kept
+	for binding, points := range m.disk.BoundLatency {
+		kept := points[:0]
+		for _, p := range points {
+			if p.Time.Local().Format("2006-01-02") >= cut {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == 0 {
+			delete(m.disk.BoundLatency, binding)
+		} else {
+			m.disk.BoundLatency[binding] = kept
+		}
+	}
 	for k, r := range m.disk.Rows {
 		if r.Day < cut {
 			delete(m.disk.Rows, k)
@@ -384,6 +399,7 @@ func (m *Monitor) poll() {
 	m.clearNodeRate(time.Now())
 	m.latencySegment = ""
 	m.latencySelections = nil
+	m.boundLatency = nil
 	m.base = base
 	m.version = ""
 	m.polls = 0
@@ -405,6 +421,7 @@ func (m *Monitor) rebase() {
 	m.latencyGroups = nil
 	m.latencySegment = ""
 	m.latencySelections = nil
+	m.boundLatency = nil
 	m.counted = nil
 	m.version = ""
 	m.polls = 0
@@ -600,8 +617,10 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 	mux.HandleFunc(root+"api/clear", post(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		latency := m.disk.Latency
+		boundLatency := m.disk.BoundLatency
 		m.disk = newDisk()
 		m.disk.Latency = latency
+		m.disk.BoundLatency = boundLatency
 		m.counted = nil
 		m.mu.Unlock()
 		if err := m.save(); err != nil {

@@ -40,6 +40,11 @@ type latencySelection struct {
 	since                  time.Time
 }
 
+type boundLatencySelection struct {
+	scope, segment string
+	since          time.Time
+}
+
 type LatencyGroup struct {
 	Endpoint string   `json:"endpoint"`
 	Group    string   `json:"group"`
@@ -63,18 +68,11 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 	Proxies []latencyProxy `json:"proxies"`
 }, now time.Time, generation uint64) {
 	m.mu.Lock()
-	var added []LatencyPoint
+	var bound []*Uploader
 	defer func() {
 		m.mu.Unlock()
-		if m.uploader != nil {
-			for _, p := range added {
-				m.uploader.enqueue(p)
-			}
-		}
-		for _, binding := range m.extraBindings {
-			for _, p := range added {
-				binding.uploader.enqueue(p)
-			}
+		for _, u := range bound {
+			u.retryBound(m)
 		}
 	}()
 	// Ignore an in-flight request after a controller change or disconnect.
@@ -94,6 +92,103 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 	for _, provider := range providers {
 		for _, p := range provider.Proxies {
 			candidates[p.Name] = append(candidates[p.Name], p)
+		}
+	}
+	if m.disk.BoundLatency == nil {
+		m.disk.BoundLatency = make(map[string][]LatencyPoint)
+	}
+	boundSeen := map[string]bool{}
+	boundKey := func(binding string, point LatencyPoint) string {
+		b, _ := json.Marshal([]any{binding, point.Endpoint, point.Group, point.Node, point.TestURL, point.Time.UTC().Format(time.RFC3339Nano)})
+		return string(b)
+	}
+	for binding, points := range m.disk.BoundLatency {
+		for _, p := range points {
+			boundSeen[boundKey(binding, p)] = true
+		}
+	}
+	// Binding samples are independent of the group's selected-node chart.
+	// Establish a fresh observation boundary for each binding on each connection.
+	if m.boundLatency == nil {
+		m.boundLatency = make(map[*Uploader]boundLatencySelection)
+	}
+	uploaders := []*Uploader{}
+	if m.uploader != nil {
+		uploaders = append(uploaders, m.uploader)
+	}
+	for _, b := range m.extraBindings {
+		uploaders = append(uploaders, b.uploader)
+	}
+	for _, u := range uploaders {
+		s := u.store.Get().Upload
+		bound = append(bound, u)
+		if !u.allowed() || !s.Enabled {
+			delete(m.boundLatency, u)
+			continue
+		}
+		g, ok := proxies[s.Group]
+		member := false
+		for _, name := range g.All {
+			member = member || name == s.TargetNode
+		}
+		if !s.Enabled || s.Source != base || s.Binding == "" || s.TargetNode == "" ||
+			s.TargetURL == "" || !ok || g.Type != "URLTest" || g.TestURL != s.TargetURL || !member {
+			delete(m.boundLatency, u)
+			continue
+		}
+		var state *proxyState
+		var encoded string
+		ambiguous := false
+		for _, p := range candidates[s.TargetNode] {
+			switch p.Type {
+			case "", "Unknown", "URLTest", "Selector", "Fallback", "LoadBalance", "Relay":
+				ambiguous = true
+			}
+			if len(p.All) != 0 || p.Now != "" {
+				ambiguous = true
+			}
+			v, exists := p.Extra[s.TargetURL]
+			if !exists {
+				ambiguous = true
+				continue
+			}
+			b, _ := json.Marshal([]any{p.Type, v})
+			if state != nil && encoded != string(b) {
+				ambiguous = true
+			}
+			copy := v
+			state, encoded = &copy, string(b)
+		}
+		if ambiguous || state == nil {
+			delete(m.boundLatency, u)
+			continue
+		}
+		scopeBytes, _ := json.Marshal([]any{base, s.Group, s.TargetNode, s.TargetURL, s.Binding, s.StartedAt, m.latencySegment})
+		scope := string(scopeBytes)
+		selection, ok := m.boundLatency[u]
+		if !ok || selection.scope != scope {
+			selection = boundLatencySelection{scope, m.latencySegment + "/binding/" + now.UTC().Format(time.RFC3339Nano), now}
+			m.boundLatency[u] = selection
+		}
+		history := append([]delayResult(nil), state.History...)
+		sort.SliceStable(history, func(i, j int) bool { return history[i].Time.Before(history[j].Time) })
+		for _, h := range history {
+			if h.Time.IsZero() || h.Time.Before(selection.since) || h.Time.Before(s.StartedAt) ||
+				h.Time.After(now.Add(time.Minute)) || h.Delay == nil || *h.Delay < 0 {
+				continue
+			}
+			if u.parent != nil {
+				start := u.parent.Get().Upload.StartedAt
+				if start.IsZero() || h.Time.Before(start) || now.Before(start) {
+					continue
+				}
+			}
+			point := LatencyPoint{base, s.Group, s.TargetNode, s.TargetURL, h.Time, h.Delay, selection.segment, true, now}
+			key := boundKey(s.Binding, point)
+			if !boundSeen[key] {
+				m.disk.BoundLatency[s.Binding] = append(m.disk.BoundLatency[s.Binding], point)
+				boundSeen[key] = true
+			}
 		}
 	}
 	seen := map[string]bool{}
@@ -160,7 +255,6 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 		if !seen[key(point)] {
 			m.disk.Latency = append(m.disk.Latency, point)
 			seen[key(point)] = true
-			added = append(added, point)
 		}
 	}
 	active := map[string]bool{}
@@ -212,6 +306,7 @@ func (m *Monitor) pollLatency() {
 			m.latencyGroups = nil
 			m.latencySegment = ""
 			m.latencySelections = nil
+			m.boundLatency = nil
 		}
 		m.mu.Unlock()
 		return

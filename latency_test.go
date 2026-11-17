@@ -315,7 +315,7 @@ func TestBoundHistoryRetriesAfterQueueFullAndRestart(t *testing.T) {
 	n.Extra[s.TargetURL] = proxyState{History: []delayResult{{Time: now.Add(time.Second), Delay: &failed}}}
 	proxies[s.TargetNode] = n
 	m.ingestLatency(m.base, proxies, nil, now.Add(2*time.Second))
-	if len(m.disk.BoundLatency) != 1 || len(u.queue.Samples) != uploadQueueLimit {
+	if len(m.disk.BoundLatency[s.Binding]) != 1 || len(u.queue.Samples) != uploadQueueLimit {
 		t.Fatal("full queue did not retain observation for retry")
 	}
 	if err := m.save(); err != nil {
@@ -335,5 +335,30 @@ func TestBoundHistoryRetriesAfterQueueFullAndRestart(t *testing.T) {
 	u.retryBound(restored)
 	if len(u.queue.Samples) != 1 {
 		t.Fatal("retry duplicated the sample")
+	}
+}
+
+func TestBoundRetryPartitionsBindingsAndRemovesAcknowledged(t *testing.T) {
+	u, st, p := uploadFixture(t, "http://127.0.0.1:8796")
+	other, otherStore, otherPoint := uploadFixture(t, "http://127.0.0.1:8796")
+	if _, err := otherStore.Update(func(v *Settings) { v.Upload.Binding = "other-binding" }); err != nil {
+		t.Fatal(err)
+	}
+	other.queue.Binding = "other-binding"
+	m := mon()
+	m.disk.BoundLatency = map[string][]LatencyPoint{
+		st.Get().Upload.Binding: {p},
+		"other-binding":         {otherPoint},
+	}
+	s := st.Get().Upload
+	id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
+	u.queue.Acked[id] = p.Time
+	u.retryBound(m)
+	if len(m.disk.BoundLatency[s.Binding]) != 0 || len(m.disk.BoundLatency["other-binding"]) != 1 {
+		t.Fatal("acknowledged item retained or other binding modified")
+	}
+	other.retryBound(m)
+	if len(m.disk.BoundLatency) != 0 || len(other.queue.Samples) != 1 {
+		t.Fatal("other binding did not queue independently")
 	}
 }

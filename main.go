@@ -71,7 +71,7 @@ type Disk struct {
 	CoreDown int64
 	Gaps     int
 	Latency  []LatencyPoint `json:"latency,omitempty"`
-	BoundLatency []boundLatencyPoint `json:"boundLatency,omitempty"`
+	BoundLatency map[string][]LatencyPoint `json:"boundLatency,omitempty"`
 }
 type Monitor struct {
 	mu                sync.Mutex
@@ -246,13 +246,19 @@ func (m *Monitor) prune(now time.Time) {
 		}
 	}
 	m.disk.Latency = kept
-	boundKept := m.disk.BoundLatency[:0]
-	for _, p := range m.disk.BoundLatency {
-		if p.Point.Time.Local().Format("2006-01-02") >= cut {
-			boundKept = append(boundKept, p)
+	for binding, points := range m.disk.BoundLatency {
+		kept := points[:0]
+		for _, p := range points {
+			if p.Time.Local().Format("2006-01-02") >= cut {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == 0 {
+			delete(m.disk.BoundLatency, binding)
+		} else {
+			m.disk.BoundLatency[binding] = kept
 		}
 	}
-	m.disk.BoundLatency = boundKept
 	for k, r := range m.disk.Rows {
 		if r.Day < cut {
 			delete(m.disk.Rows, k)

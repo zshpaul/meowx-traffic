@@ -45,11 +45,6 @@ type boundLatencySelection struct {
 	since          time.Time
 }
 
-type boundLatencyPoint struct {
-	Binding string       `json:"binding"`
-	Point   LatencyPoint `json:"point"`
-}
-
 type LatencyGroup struct {
 	Endpoint string   `json:"endpoint"`
 	Group    string   `json:"group"`
@@ -73,15 +68,11 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 	Proxies []latencyProxy `json:"proxies"`
 }, now time.Time, generation uint64) {
 	m.mu.Lock()
-	type boundPoint struct {
-		u *Uploader
-		p LatencyPoint
-	}
-	var bound []boundPoint
+	var bound []*Uploader
 	defer func() {
 		m.mu.Unlock()
-		for _, item := range bound {
-			item.u.enqueue(item.p)
+		for _, u := range bound {
+			u.retryBound(m)
 		}
 	}()
 	// Ignore an in-flight request after a controller change or disconnect.
@@ -103,13 +94,18 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 			candidates[p.Name] = append(candidates[p.Name], p)
 		}
 	}
-	boundSeen := make(map[string]bool, len(m.disk.BoundLatency))
+	if m.disk.BoundLatency == nil {
+		m.disk.BoundLatency = make(map[string][]LatencyPoint)
+	}
+	boundSeen := map[string]bool{}
 	boundKey := func(binding string, point LatencyPoint) string {
 		b, _ := json.Marshal([]any{binding, point.Endpoint, point.Group, point.Node, point.TestURL, point.Time.UTC().Format(time.RFC3339Nano)})
 		return string(b)
 	}
-	for _, p := range m.disk.BoundLatency {
-		boundSeen[boundKey(p.Binding, p.Point)] = true
+	for binding, points := range m.disk.BoundLatency {
+		for _, p := range points {
+			boundSeen[boundKey(binding, p)] = true
+		}
 	}
 	// Binding samples are independent of the group's selected-node chart.
 	// Establish a fresh observation boundary for each binding on each connection.
@@ -125,6 +121,7 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 	}
 	for _, u := range uploaders {
 		s := u.store.Get().Upload
+		bound = append(bound, u)
 		g, ok := proxies[s.Group]
 		member := false
 		for _, name := range g.All {
@@ -179,10 +176,9 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 			point := LatencyPoint{base, s.Group, s.TargetNode, s.TargetURL, h.Time, h.Delay, selection.segment, true, now}
 			key := boundKey(s.Binding, point)
 			if !boundSeen[key] {
-				m.disk.BoundLatency = append(m.disk.BoundLatency, boundLatencyPoint{s.Binding, point})
+				m.disk.BoundLatency[s.Binding] = append(m.disk.BoundLatency[s.Binding], point)
 				boundSeen[key] = true
 			}
-			bound = append(bound, boundPoint{u, point})
 		}
 	}
 	seen := map[string]bool{}

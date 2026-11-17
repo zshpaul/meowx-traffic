@@ -243,13 +243,40 @@ func (u *Uploader) snapshot() (int, int, string) {
 	return len(u.queue.Samples), u.queue.Dropped, u.status
 }
 func (u *Uploader) retryBound(m *Monitor) {
+	s := u.store.Get().Upload
 	m.mu.Lock()
-	points := append([]boundLatencyPoint(nil), m.disk.BoundLatency...)
+	points := append([]LatencyPoint(nil), m.disk.BoundLatency[s.Binding]...)
 	m.mu.Unlock()
+	done := map[string]bool{}
 	for _, p := range points {
-		if p.Binding == u.store.Get().Upload.Binding {
-			u.enqueue(p.Point)
+		u.enqueue(p)
+		u.mu.Lock()
+		id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
+		_, ok := u.queue.Acked[id]
+		for _, queued := range u.queue.Samples {
+			ok = ok || queued.ID == id
 		}
+		u.mu.Unlock()
+		if ok {
+			done[id] = true
+		}
+	}
+	if len(done) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.disk.BoundLatency[s.Binding][:0]
+	for _, p := range m.disk.BoundLatency[s.Binding] {
+		id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
+		if !done[id] {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		delete(m.disk.BoundLatency, s.Binding)
+	} else {
+		m.disk.BoundLatency[s.Binding] = kept
 	}
 }
 

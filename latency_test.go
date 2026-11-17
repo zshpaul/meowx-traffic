@@ -438,3 +438,29 @@ func TestBoundRetryWaitsForDestinationMigration(t *testing.T) {
 		t.Fatal("pending sample not queued after migration")
 	}
 }
+
+func TestPrimaryBoundRetrySurvivesDisableAndEnable(t *testing.T) {
+	u, st, p := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	m := mon()
+	m.disk.BoundLatency = map[string][]LatencyPoint{s.Binding: {p}}
+	u.queue.Samples = make([]UploadSample, uploadQueueLimit)
+	if _, err := st.Update(func(v *Settings) { v.Upload.Enabled = false }); err != nil {
+		t.Fatal(err)
+	}
+	u.retryBound(m)
+	if len(m.disk.BoundLatency[s.Binding]) != 1 {
+		t.Fatal("disabled primary discarded pending point")
+	}
+	if _, err := st.Update(func(v *Settings) {
+		v.Upload.Enabled = true
+		v.Upload.StartedAt = time.Now().UTC()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	u.queue.Samples = nil
+	u.retryBound(m)
+	if len(m.disk.BoundLatency) != 0 || len(u.queue.Samples) != 1 {
+		t.Fatal("primary did not retry previously authorized point")
+	}
+}

@@ -207,7 +207,7 @@ func (u *Uploader) enqueueBound(p LatencyPoint, captured bool) {
 			return
 		}
 	}
-	if !s.Enabled || s.Source != p.Endpoint || s.Group != p.Group || s.TargetNode == "" || s.TargetNode != p.Node || s.TargetURL == "" || s.TargetURL != p.TestURL || s.Binding == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || !p.Fresh || p.ObservedAt.IsZero() || p.Delay == nil || s.StartedAt.IsZero() || p.ObservedAt.Before(s.StartedAt) || p.Time.Before(s.StartedAt) || p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
+	if !s.Enabled || s.Source != p.Endpoint || s.Group != p.Group || s.TargetNode == "" || s.TargetNode != p.Node || s.TargetURL == "" || s.TargetURL != p.TestURL || s.Binding == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || !p.Fresh || p.ObservedAt.IsZero() || p.Delay == nil || s.StartedAt.IsZero() || (!captured && (p.ObservedAt.Before(s.StartedAt) || p.Time.Before(s.StartedAt))) || p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
 		return
 	}
 	if u.status == "上传队列无法读取，已暂停" {
@@ -259,7 +259,7 @@ func (u *Uploader) retryBound(m *Monitor) {
 	done := map[string]bool{}
 	for _, p := range points {
 		if p.Endpoint != s.Source || p.Group != s.Group || p.Node != s.TargetNode || p.TestURL != s.TargetURL ||
-			s.StartedAt.IsZero() || p.Time.Before(s.StartedAt) || p.ObservedAt.Before(s.StartedAt) ||
+			s.StartedAt.IsZero() ||
 			p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
 			id := opaqueID(u.queue.Seed, s.GroupID, p.Endpoint, p.Group, p.Node, p.TestURL, p.Time.UTC().Format(time.RFC3339Nano))
 			done[id] = true

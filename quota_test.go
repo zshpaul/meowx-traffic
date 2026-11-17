@@ -76,7 +76,9 @@ func TestExtraQuotaBindingIsIndependentAndSendsRawValues(t *testing.T) {
 		t.Fatalf("bind failed: %d", code)
 	}
 	w := httptest.NewRecorder()
-	primaryQuotaSettingsRoute(m, st)(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"profile":"dmit-profile"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"profile":"dmit-profile"}`))
+	req.Header.Set("Content-Type", "application/json")
+	primaryQuotaSettingsRoute(m, st)(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatal("primary accepted a profile already bound to an additional node")
 	}
@@ -133,7 +135,9 @@ func TestConcurrentQuotaBindingsAndUnreadableQueue(t *testing.T) {
 		go func(h http.HandlerFunc) {
 			<-start
 			w := httptest.NewRecorder()
-			h(w, httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"shared","confirm":true}`)))
+			req := httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"shared","confirm":true}`))
+			req.Header.Set("Content-Type", "application/json")
+			h(w, req)
 			results <- w.Code
 		}(handler)
 	}
@@ -150,7 +154,9 @@ func TestConcurrentQuotaBindingsAndUnreadableQueue(t *testing.T) {
 	extras = loadExtraBindings(root, config, st)
 	m.extraBindings = extras
 	w := httptest.NewRecorder()
-	extraQuotaSettingsRoute(m)(w, httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"shared","confirm":true}`)))
+	req := httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"shared","confirm":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	extraQuotaSettingsRoute(m)(w, req)
 	extras[0].quota.tick()
 	after, err := os.ReadFile(queue)
 	if w.Code != http.StatusConflict || err != nil || string(after) != string(corrupt) {

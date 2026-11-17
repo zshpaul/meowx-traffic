@@ -16,10 +16,6 @@ func quotaSettingsRoute(q *quotaSync, st *Store, conflict ...func(string) bool) 
 		view := func() {
 			q.mu.Lock()
 			defer q.mu.Unlock()
-			if q.loadError {
-				http.Error(w, "配额队列无法读取，请先恢复原队列", http.StatusConflict)
-				return
-			}
 			s := st.Get()
 			jsonOut(w, map[string]any{"profile": s.QuotaProfile, "groupId": s.QuotaGroupID, "pending": q.disk.Pending, "status": q.status})
 		}
@@ -44,6 +40,10 @@ func quotaSettingsRoute(q *quotaSync, st *Store, conflict ...func(string) bool) 
 			defer q.sendMu.Unlock()
 			q.mu.Lock()
 			defer q.mu.Unlock()
+			if q.loadError {
+				http.Error(w, "配额队列无法读取，请先恢复原队列", http.StatusConflict)
+				return
+			}
 			s := st.Get()
 			if !s.Upload.Enabled || s.Upload.GroupID == "" {
 				http.Error(w, "请先启用探针上传", http.StatusBadRequest)

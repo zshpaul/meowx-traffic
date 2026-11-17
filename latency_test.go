@@ -288,6 +288,9 @@ func TestBoundNodeRejectsAmbiguousIdentityAndWrongURL(t *testing.T) {
 	m.ingestLatency(m.base, proxies, providers, now.Add(2*time.Second))
 	n.Type = "URLTest"
 	proxies[s.TargetNode] = n
+	g := proxies[s.Group]
+	g.Now = s.TargetNode
+	proxies[s.Group] = g
 	m.ingestLatency(m.base, proxies, nil, now.Add(3*time.Second))
 	if len(u.queue.Samples) != 0 {
 		t.Fatal("wrong URL, ambiguous node or group history uploaded")

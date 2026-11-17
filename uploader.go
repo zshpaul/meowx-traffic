@@ -242,7 +242,7 @@ func (u *Uploader) snapshot() (int, int, string) {
 	defer u.mu.Unlock()
 	return len(u.queue.Samples), u.queue.Dropped, u.status
 }
-func (u *Uploader) run(stop <-chan struct{}, m *Monitor) {
+func (u *Uploader) run(stop <-chan struct{}) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for {
@@ -250,12 +250,6 @@ func (u *Uploader) run(stop <-chan struct{}, m *Monitor) {
 		case <-stop:
 			return
 		case <-t.C:
-			m.mu.Lock()
-			points := append([]LatencyPoint(nil), m.disk.Latency...)
-			m.mu.Unlock()
-			for _, p := range points {
-				u.enqueue(p)
-			}
 			u.flush()
 		}
 	}

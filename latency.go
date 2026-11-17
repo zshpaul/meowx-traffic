@@ -68,7 +68,6 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 	Proxies []latencyProxy `json:"proxies"`
 }, now time.Time, generation uint64) {
 	m.mu.Lock()
-	var added []LatencyPoint
 	type boundPoint struct {
 		u *Uploader
 		p LatencyPoint
@@ -76,16 +75,6 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 	var bound []boundPoint
 	defer func() {
 		m.mu.Unlock()
-		if m.uploader != nil {
-			for _, p := range added {
-				m.uploader.enqueue(p)
-			}
-		}
-		for _, binding := range m.extraBindings {
-			for _, p := range added {
-				binding.uploader.enqueue(p)
-			}
-		}
 		for _, item := range bound {
 			item.u.enqueue(item.p)
 		}
@@ -149,7 +138,7 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 				ambiguous = true
 				continue
 			}
-			b, _ := json.Marshal(v)
+			b, _ := json.Marshal([]any{p.Type, v})
 			if state != nil && encoded != string(b) {
 				ambiguous = true
 			}
@@ -241,7 +230,6 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 		if !seen[key(point)] {
 			m.disk.Latency = append(m.disk.Latency, point)
 			seen[key(point)] = true
-			added = append(added, point)
 		}
 	}
 	active := map[string]bool{}

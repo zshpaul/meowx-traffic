@@ -682,7 +682,7 @@ func main() {
 	go srv.Serve(ln)
 	stop := make(chan struct{})
 	doneUpload := make(chan struct{})
-	go func() { defer close(doneUpload); m.uploader.run(stop, m) }()
+	go func() { defer close(doneUpload); m.uploader.run(stop) }()
 	doneQuota := make(chan struct{})
 	go func() { defer close(doneQuota); m.quota.run(stop) }()
 	doneNodeRate := make(chan struct{})
@@ -691,7 +691,7 @@ func main() {
 	for _, binding := range m.extraBindings {
 		binding := binding
 		extraDone.Add(3)
-		go func() { defer extraDone.Done(); binding.uploader.run(stop, m) }()
+		go func() { defer extraDone.Done(); binding.uploader.run(stop) }()
 		go func() { defer extraDone.Done(); binding.quota.run(stop) }()
 		go func() { defer extraDone.Done(); binding.uploader.runNodeRate(stop, m) }()
 	}

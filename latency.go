@@ -45,6 +45,11 @@ type boundLatencySelection struct {
 	since          time.Time
 }
 
+type boundLatencyPoint struct {
+	Binding string       `json:"binding"`
+	Point   LatencyPoint `json:"point"`
+}
+
 type LatencyGroup struct {
 	Endpoint string   `json:"endpoint"`
 	Group    string   `json:"group"`
@@ -97,6 +102,14 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 		for _, p := range provider.Proxies {
 			candidates[p.Name] = append(candidates[p.Name], p)
 		}
+	}
+	boundSeen := make(map[string]bool, len(m.disk.BoundLatency))
+	boundKey := func(binding string, point LatencyPoint) string {
+		b, _ := json.Marshal([]any{binding, point.Endpoint, point.Group, point.Node, point.TestURL, point.Time.UTC().Format(time.RFC3339Nano)})
+		return string(b)
+	}
+	for _, p := range m.disk.BoundLatency {
+		boundSeen[boundKey(p.Binding, p.Point)] = true
 	}
 	// Binding samples are independent of the group's selected-node chart.
 	// Establish a fresh observation boundary for each binding on each connection.
@@ -163,7 +176,13 @@ func (m *Monitor) ingestLatencyGeneration(base string, proxies map[string]latenc
 				h.Time.After(now.Add(time.Minute)) || h.Delay == nil || *h.Delay < 0 {
 				continue
 			}
-			bound = append(bound, boundPoint{u, LatencyPoint{base, s.Group, s.TargetNode, s.TargetURL, h.Time, h.Delay, selection.segment, true, now}})
+			point := LatencyPoint{base, s.Group, s.TargetNode, s.TargetURL, h.Time, h.Delay, selection.segment, true, now}
+			key := boundKey(s.Binding, point)
+			if !boundSeen[key] {
+				m.disk.BoundLatency = append(m.disk.BoundLatency, boundLatencyPoint{s.Binding, point})
+				boundSeen[key] = true
+			}
+			bound = append(bound, boundPoint{u, point})
 		}
 	}
 	seen := map[string]bool{}

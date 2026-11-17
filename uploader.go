@@ -202,7 +202,7 @@ func (u *Uploader) enqueue(p LatencyPoint) {
 			return
 		}
 	}
-	if !s.Enabled || s.Source != p.Endpoint || s.Group != p.Group || s.TargetNode == "" || s.TargetNode != p.Node || s.TargetURL == "" || s.TargetURL != p.TestURL || s.Binding == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || !p.Fresh || p.ObservedAt.IsZero() || p.Delay == nil || s.StartedAt.IsZero() || p.ObservedAt.Before(s.StartedAt) || p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
+	if !s.Enabled || s.Source != p.Endpoint || s.Group != p.Group || s.TargetNode == "" || s.TargetNode != p.Node || s.TargetURL == "" || s.TargetURL != p.TestURL || s.Binding == "" || s.Binding != u.queue.Binding || !u.matchesDestination(s) || !p.Fresh || p.ObservedAt.IsZero() || p.Delay == nil || s.StartedAt.IsZero() || p.ObservedAt.Before(s.StartedAt) || p.Time.Before(s.StartedAt) || p.Time.Before(time.Now().Add(-30*24*time.Hour)) {
 		return
 	}
 	if u.status == "上传队列无法读取，已暂停" {
@@ -242,7 +242,18 @@ func (u *Uploader) snapshot() (int, int, string) {
 	defer u.mu.Unlock()
 	return len(u.queue.Samples), u.queue.Dropped, u.status
 }
-func (u *Uploader) run(stop <-chan struct{}) {
+func (u *Uploader) retryBound(m *Monitor) {
+	m.mu.Lock()
+	points := append([]boundLatencyPoint(nil), m.disk.BoundLatency...)
+	m.mu.Unlock()
+	for _, p := range points {
+		if p.Binding == u.store.Get().Upload.Binding {
+			u.enqueue(p.Point)
+		}
+	}
+}
+
+func (u *Uploader) run(stop <-chan struct{}, m *Monitor) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for {
@@ -250,6 +261,7 @@ func (u *Uploader) run(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
+			u.retryBound(m)
 			u.flush()
 		}
 	}

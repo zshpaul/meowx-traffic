@@ -71,6 +71,7 @@ type Disk struct {
 	CoreDown int64
 	Gaps     int
 	Latency  []LatencyPoint `json:"latency,omitempty"`
+	BoundLatency []boundLatencyPoint `json:"boundLatency,omitempty"`
 }
 type Monitor struct {
 	mu                sync.Mutex
@@ -245,6 +246,13 @@ func (m *Monitor) prune(now time.Time) {
 		}
 	}
 	m.disk.Latency = kept
+	boundKept := m.disk.BoundLatency[:0]
+	for _, p := range m.disk.BoundLatency {
+		if p.Point.Time.Local().Format("2006-01-02") >= cut {
+			boundKept = append(boundKept, p)
+		}
+	}
+	m.disk.BoundLatency = boundKept
 	for k, r := range m.disk.Rows {
 		if r.Day < cut {
 			delete(m.disk.Rows, k)
@@ -603,8 +611,10 @@ func routes(mux *http.ServeMux, root, dir string, m *Monitor, st *Store) {
 	mux.HandleFunc(root+"api/clear", post(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		latency := m.disk.Latency
+		boundLatency := m.disk.BoundLatency
 		m.disk = newDisk()
 		m.disk.Latency = latency
+		m.disk.BoundLatency = boundLatency
 		m.counted = nil
 		m.mu.Unlock()
 		if err := m.save(); err != nil {
@@ -682,7 +692,7 @@ func main() {
 	go srv.Serve(ln)
 	stop := make(chan struct{})
 	doneUpload := make(chan struct{})
-	go func() { defer close(doneUpload); m.uploader.run(stop) }()
+	go func() { defer close(doneUpload); m.uploader.run(stop, m) }()
 	doneQuota := make(chan struct{})
 	go func() { defer close(doneQuota); m.quota.run(stop) }()
 	doneNodeRate := make(chan struct{})
@@ -691,7 +701,7 @@ func main() {
 	for _, binding := range m.extraBindings {
 		binding := binding
 		extraDone.Add(3)
-		go func() { defer extraDone.Done(); binding.uploader.run(stop) }()
+		go func() { defer extraDone.Done(); binding.uploader.run(stop, m) }()
 		go func() { defer extraDone.Done(); binding.quota.run(stop) }()
 		go func() { defer extraDone.Done(); binding.uploader.runNodeRate(stop, m) }()
 	}

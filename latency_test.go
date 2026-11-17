@@ -296,3 +296,44 @@ func TestBoundNodeRejectsAmbiguousIdentityAndWrongURL(t *testing.T) {
 		t.Fatal("wrong URL, ambiguous node or group history uploaded")
 	}
 }
+
+func TestBoundHistoryRetriesAfterQueueFullAndRestart(t *testing.T) {
+	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	s := st.Get().Upload
+	m := mon()
+	m.connected, m.base, m.uploader = true, s.Source, u
+	m.file = filepath.Join(t.TempDir(), "history.json")
+	now := time.Now().UTC()
+	failed := 0
+	proxies := map[string]latencyProxy{
+		s.Group: {Type: "URLTest", Now: "other", TestURL: s.TargetURL, All: []string{s.TargetNode}},
+		s.TargetNode: {Type: "Vmess", Extra: map[string]proxyState{s.TargetURL: {}}},
+	}
+	m.ingestLatency(m.base, proxies, nil, now)
+	u.queue.Samples = make([]UploadSample, uploadQueueLimit)
+	n := proxies[s.TargetNode]
+	n.Extra[s.TargetURL] = proxyState{History: []delayResult{{Time: now.Add(time.Second), Delay: &failed}}}
+	proxies[s.TargetNode] = n
+	m.ingestLatency(m.base, proxies, nil, now.Add(2*time.Second))
+	if len(m.disk.BoundLatency) != 1 || len(u.queue.Samples) != uploadQueueLimit {
+		t.Fatal("full queue did not retain observation for retry")
+	}
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+	// The controller has rolled over, and the queue has since drained.
+	u.queue.Samples = nil
+	restored := mon()
+	restored.file = m.file
+	if err := restored.load(); err != nil {
+		t.Fatal(err)
+	}
+	u.retryBound(restored)
+	if len(u.queue.Samples) != 1 || u.queue.Samples[0].Status != "failed" {
+		t.Fatal("persisted bound failure was not retried")
+	}
+	u.retryBound(restored)
+	if len(u.queue.Samples) != 1 {
+		t.Fatal("retry duplicated the sample")
+	}
+}

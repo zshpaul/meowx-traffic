@@ -20,6 +20,158 @@ type quotaTransport func(*http.Request) (*http.Response, error)
 
 func (f quotaTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestExtraQuotaBindingIsIndependentAndSendsRawValues(t *testing.T) {
+	primary, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	if _, err := st.Update(func(s *Settings) {
+		s.QuotaProfile, s.QuotaGroupID = "bwh-profile", s.Upload.GroupID
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primarySettings, err := os.ReadFile(st.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryQueue, err := os.ReadFile(primary.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryQuota := newQuotaSync(filepath.Dir(st.file), "", st, &primary.sendMu)
+	primaryQuota.disk = quotaDisk{Profile: "bwh-profile", GroupID: st.Get().Upload.GroupID, Pending: true, Latest: quotaSnapshot{GroupID: st.Get().Upload.GroupID, Revision: 7}}
+	if err := primaryQuota.save(); err != nil {
+		t.Fatal(err)
+	}
+	primaryQuotaQueue, err := os.ReadFile(primaryQuota.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	config := filepath.Join(root, "config.json")
+	if err := os.WriteFile(config, []byte(`{"profiles":[{"id":"dmit-profile","lastUpdateDate":"2026-11-17T00:00:00Z","subscriptionInfo":{"upload":10,"download":20,"total":214748364800}}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	extraSettings := st.Get()
+	extraSettings.Upload.GroupID, extraSettings.Upload.Binding, extraSettings.Upload.TargetNode = "dmit-group", "dmit-binding", "dmit-node"
+	extraSettings.QuotaProfile, extraSettings.QuotaGroupID = "", ""
+	writeExtraSettings(t, root, "dmit", extraSettings)
+	extras := loadExtraBindings(root, config, st)
+	if len(extras) != 1 {
+		t.Fatal("missing extra binding")
+	}
+	m := &Monitor{uploader: primary, extraBindings: extras}
+	m.quota = newQuotaSync(filepath.Dir(st.file), config, st, &primary.sendMu)
+	route := extraQuotaSettingsRoute(m)
+	call := func(group, body string) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/?groupId="+group, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		route(w, r)
+		return w.Code
+	}
+	if call("dmit-group", `{"profile":"dmit-profile"}`) != http.StatusBadRequest ||
+		call("dmit-group", `{"profile":"bwh-profile","confirm":true}`) != http.StatusConflict ||
+		call(st.Get().Upload.GroupID, `{"profile":"dmit-profile","confirm":true}`) != http.StatusNotFound {
+		t.Fatal("unconfirmed, primary profile, or primary group was accepted")
+	}
+	if code := call("dmit-group", `{"profile":"dmit-profile","confirm":true}`); code != http.StatusOK {
+		t.Fatalf("bind failed: %d", code)
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"profile":"dmit-profile"}`))
+	req.Header.Set("Content-Type", "application/json")
+	primaryQuotaSettingsRoute(m, st)(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatal("primary accepted a profile already bound to an additional node")
+	}
+	q := extras[0].quota
+	var sent quotaSnapshot
+	q.client.Transport = quotaTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet {
+			return quotaResponse(200, `{"version":1,"snapshot":null}`), nil
+		}
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Fatal(err)
+		}
+		return quotaResponse(200, `{"version":1,"group_id":"dmit-group","revision":1,"disposition":"stored"}`), nil
+	})
+	q.tick()
+	if sent.GroupID != "dmit-group" || sent.Upload == nil || *sent.Upload != 10 ||
+		sent.Download == nil || *sent.Download != 20 || sent.Total == nil || *sent.Total != 214748364800 || q.disk.Pending {
+		t.Fatal("extra quota did not send the raw values and acknowledge them")
+	}
+	reloaded := loadExtraBindings(root, config, st)
+	if len(reloaded) != 1 || reloaded[0].store.Get().QuotaProfile != "dmit-profile" ||
+		reloaded[0].store.Get().QuotaGroupID != "dmit-group" || reloaded[0].quota.disk.Pending {
+		t.Fatal("extra quota binding or queue did not survive restart")
+	}
+	afterSettings, err := os.ReadFile(st.file)
+	if err != nil || string(afterSettings) != string(primarySettings) {
+		t.Fatal("primary settings changed")
+	}
+	afterQueue, err := os.ReadFile(primary.file)
+	if err != nil || string(afterQueue) != string(primaryQueue) {
+		t.Fatal("primary upload queue changed")
+	}
+	afterQuotaQueue, err := os.ReadFile(primaryQuota.path)
+	if err != nil || string(afterQuotaQueue) != string(primaryQuotaQueue) {
+		t.Fatal("primary pending quota queue changed")
+	}
+}
+
+func TestConcurrentQuotaBindingsAndUnreadableQueue(t *testing.T) {
+	u, st, _ := uploadFixture(t, "http://127.0.0.1:8796")
+	root := t.TempDir()
+	config := filepath.Join(root, "config.json")
+	if err := os.WriteFile(config, []byte(`{"profiles":[{"id":"shared","lastUpdateDate":"2026-11-17T00:00:00Z","subscriptionInfo":{"upload":1,"download":2,"total":100}},{"id":"distinct","lastUpdateDate":"2026-11-17T00:00:00Z","subscriptionInfo":{"upload":3,"download":4,"total":100}}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := st.Get()
+	s.Upload.GroupID, s.Upload.Binding = "extra-group", "extra-binding"
+	writeExtraSettings(t, root, "extra", s)
+	extras := loadExtraBindings(root, config, st)
+	m := &Monitor{quota: newQuotaSync(filepath.Dir(st.file), config, st, &u.sendMu), extraBindings: extras}
+	results := make(chan int, 2)
+	start := make(chan struct{})
+	for _, handler := range []http.HandlerFunc{primaryQuotaSettingsRoute(m, st), extraQuotaSettingsRoute(m)} {
+		go func(h http.HandlerFunc) {
+			<-start
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"shared","confirm":true}`))
+			req.Header.Set("Content-Type", "application/json")
+			h(w, req)
+			results <- w.Code
+		}(handler)
+	}
+	close(start)
+	a, b := <-results, <-results
+	if !((a == http.StatusOK && b == http.StatusConflict) || (b == http.StatusOK && a == http.StatusConflict)) {
+		t.Fatalf("concurrent bindings: %d, %d", a, b)
+	}
+	queue := filepath.Join(root, "bindings", "extra", "quota-queue.json")
+	corrupt := []byte(`{"pending":`)
+	if err := os.WriteFile(queue, corrupt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	extras = loadExtraBindings(root, config, st)
+	m.extraBindings = extras
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/?groupId=extra-group", strings.NewReader(`{"profile":"distinct","confirm":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	extraQuotaSettingsRoute(m)(w, req)
+	extras[0].quota.tick()
+	after, err := os.ReadFile(queue)
+	if w.Code != http.StatusConflict || err != nil || string(after) != string(corrupt) {
+		t.Fatal("unreadable pending queue was not preserved")
+	}
+	restarted := loadExtraBindings(root, config, st)
+	if len(restarted) != 1 || !restarted[0].quota.loadError {
+		t.Fatal("unreadable queue protection did not survive restart")
+	}
+	afterRestart, err := os.ReadFile(queue)
+	if err != nil || string(afterRestart) != string(corrupt) {
+		t.Fatal("unreadable queue changed after restart")
+	}
+}
+
 func TestQuotaExplicitRebindPreservesPendingAndRestarts(t *testing.T) {
 	dir := t.TempDir()
 	config := filepath.Join(dir, "config.json")

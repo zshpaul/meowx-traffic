@@ -105,18 +105,19 @@ func readQuota(path, profile, group string, loc *time.Location) (quotaSnapshot, 
 }
 
 type quotaSync struct {
-	mu      sync.Mutex
-	sendMu  *sync.Mutex
-	store   *Store
-	parent  *Store
-	path    string
-	config  string
-	disk    quotaDisk
-	status  string
-	blocked bool
-	next    time.Time
-	backoff time.Duration
-	client  *http.Client
+	mu        sync.Mutex
+	sendMu    *sync.Mutex
+	store     *Store
+	parent    *Store
+	path      string
+	config    string
+	disk      quotaDisk
+	status    string
+	blocked   bool
+	loadError bool
+	next      time.Time
+	backoff   time.Duration
+	client    *http.Client
 }
 
 func newQuotaSync(dir, config string, st *Store, sendMu *sync.Mutex) *quotaSync {
@@ -124,10 +125,10 @@ func newQuotaSync(dir, config string, st *Store, sendMu *sync.Mutex) *quotaSync 
 	b, err := os.ReadFile(q.path)
 	if err == nil {
 		if json.Unmarshal(b, &q.disk) != nil {
-			q.blocked, q.status = true, "配额队列无法读取"
+			q.blocked, q.loadError, q.status = true, true, "配额队列无法读取"
 		}
 	} else if !os.IsNotExist(err) {
-		q.blocked, q.status = true, "配额队列无法读取"
+		q.blocked, q.loadError, q.status = true, true, "配额队列无法读取"
 	}
 	return q
 }

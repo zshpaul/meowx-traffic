@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func quotaSettingsRoute(q *quotaSync, st *Store) http.HandlerFunc {
+func quotaSettingsRoute(q *quotaSync, st *Store, conflict ...func(string) bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
 			http.Error(w, "配额同步不可用", http.StatusServiceUnavailable)
@@ -26,18 +26,35 @@ func quotaSettingsRoute(q *quotaSync, st *Store) http.HandlerFunc {
 		post(func(w http.ResponseWriter, r *http.Request) {
 			var in struct {
 				Profile string `json:"profile"`
+				Confirm bool   `json:"confirm"`
 			}
 			if json.NewDecoder(r.Body).Decode(&in) != nil || strings.TrimSpace(in.Profile) != in.Profile || in.Profile == "" || len(in.Profile) > 128 {
 				http.Error(w, "订阅档案标识无效", http.StatusBadRequest)
+				return
+			}
+			if q.parent != nil && !in.Confirm {
+				http.Error(w, "请确认公开附加节点的订阅用量", http.StatusBadRequest)
 				return
 			}
 			q.sendMu.Lock()
 			defer q.sendMu.Unlock()
 			q.mu.Lock()
 			defer q.mu.Unlock()
+			if q.loadError {
+				http.Error(w, "配额队列无法读取，请先恢复原队列", http.StatusConflict)
+				return
+			}
 			s := st.Get()
 			if !s.Upload.Enabled || s.Upload.GroupID == "" {
 				http.Error(w, "请先启用探针上传", http.StatusBadRequest)
+				return
+			}
+			if q.parent != nil && q.parent.Get().QuotaProfile == in.Profile {
+				http.Error(w, "附加节点不能复用主节点的订阅档案", http.StatusConflict)
+				return
+			}
+			if len(conflict) > 0 && conflict[0](in.Profile) {
+				http.Error(w, "订阅档案已绑定其他节点", http.StatusConflict)
 				return
 			}
 			if _, err := readQuota(q.config, in.Profile, s.Upload.GroupID, time.Local); err != nil {
@@ -66,5 +83,49 @@ func quotaSettingsRoute(q *quotaSync, st *Store) http.HandlerFunc {
 			q.next = time.Time{}
 			jsonOut(w, map[string]string{"status": "saved"})
 		})(w, r)
+	}
+}
+
+func primaryQuotaSettingsRoute(m *Monitor, st *Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m.quotaBindingMu.Lock()
+		defer m.quotaBindingMu.Unlock()
+		quotaSettingsRoute(m.quota, st, func(profile string) bool {
+			for _, b := range m.extraBindings {
+				if b.store.Get().QuotaProfile == profile {
+					return true
+				}
+			}
+			return false
+		})(w, r)
+	}
+}
+
+// Additional nodes have separate settings and quota queues. Select the
+// running binding by its public identity; never route this to the primary.
+func extraQuotaSettingsRoute(m *Monitor) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m.quotaBindingMu.Lock()
+		defer m.quotaBindingMu.Unlock()
+		id := r.URL.Query().Get("groupId")
+		if id == "" {
+			http.Error(w, "请选择附加节点", http.StatusBadRequest)
+			return
+		}
+		for _, b := range m.extraBindings {
+			if b.store.Get().Upload.GroupID != id {
+				continue
+			}
+			quotaSettingsRoute(b.quota, b.store, func(profile string) bool {
+				for _, other := range m.extraBindings {
+					if other != b && other.store.Get().QuotaProfile == profile {
+						return true
+					}
+				}
+				return false
+			})(w, r)
+			return
+		}
+		http.Error(w, "附加节点不存在或尚未重启", http.StatusNotFound)
 	}
 }
